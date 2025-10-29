@@ -40,25 +40,53 @@ Vorgaben:
 - Nur das JSON, keine Markdown-Fences.
 `;
 
-/* ---------------- Text aus PDF pro Seite (pdfjs-dist v5 kompatibel) ---------------- */
+/* -------------------------------------------------------------------------- */
+/*  PDF-Text pro Seite (Node/Vercel-freundlich)                               */
+/*  - nutzt pdfjs-dist Legacy-Build (kein Worker)                             */
+/*  - DOMMatrix-Polyfill nur wenn nötig                                       */
+/*  - Fallback auf pdf-parse (ohne Seitenzahlen)                              */
+/* -------------------------------------------------------------------------- */
 async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
-  // v5 nutzt ESM-Struktur – wir importieren die Legacy-Build-API ohne Worker
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-
-  const uint8 = new Uint8Array(file);
-  const doc = await pdfjs.getDocument({ data: uint8 }).promise;
-
-  const pages: string[] = [];
-  const maxPages = Math.min(doc.numPages, 80);
-  for (let p = 1; p <= maxPages; p++) {
-    const page = await doc.getPage(p);
-    const content = await page.getTextContent();
-    const text = content.items.map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
-    pages.push(`Seite ${p}:\n${text}`);
+  // 1) Minimal-Polyfill für DOMMatrix, falls in Node nicht vorhanden
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class {
+      // reicht für pdfjs-Text-Extraktion (keine echten Matrix-OPs nötig)
+      multiply() { return this; }
+      translate() { return this; }
+      scale() { return this; }
+      rotate() { return this; }
+    };
   }
 
-  const joined = pages.join("\n\n---\n\n");
-  return joined.length > 60000 ? joined.slice(0, 60000) : joined;
+  // 2) Versuche: pdfjs-dist Legacy (CJS kompatibel in Node)
+  try {
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.js");
+    const uint8 = new Uint8Array(file);
+    const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
+
+    const pages: string[] = [];
+    const maxPages = Math.min(doc.numPages, 80);
+    for (let p = 1; p <= maxPages; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent();
+      const text = content.items.map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
+      pages.push(`Seite ${p}:\n${text}`);
+    }
+    const joined = pages.join("\n\n---\n\n");
+    return joined.length > 60000 ? joined.slice(0, 60000) : joined;
+  } catch (err) {
+    // 3) Fallback: pdf-parse (kein DOM, aber auch keine Seitenzahlen)
+    try {
+      const pdfParse = (await import("pdf-parse")).default as any;
+      const buf = Buffer.from(file);
+      const r = await pdfParse(buf);
+      const text = (r.text || "").replace(/\s+\n/g, "\n").trim();
+      return `Seite 1:\n${text}`;
+    } catch (err2) {
+      // 4) Letzte Eskalation: gib kurzen Hinweis zurück
+      return "Seite 1:\n[PDF konnte serverseitig nicht extrahiert werden]";
+    }
+  }
 }
 
 /* ---------------- Normalisierung (EN/DE) ---------------- */

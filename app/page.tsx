@@ -1,6 +1,14 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+/**
+ * Frontend Dashboard (Dark UI)
+ * - Zeigt Compliance-Score (0–100, höher ist besser)
+ * - Leitet Risiko = 100 - Compliance ab, wenn kein Server-Risiko vorhanden ist
+ * - Deutsche Labels (erfüllt/teilweise/fehlt)
+ * - Robuste Anzeige gegen verschiedene API-Formate
+ */
+
 type Evidence = { quote: string; page: number };
 type Clause = { status?: string; belege?: Evidence[]; evidence?: Evidence[] };
 
@@ -15,6 +23,7 @@ const ART28_KEYS: Record<string, string> = {
   audit_rights: "Audit/Nachweis",
 };
 
+// Kanonische Schlüssel (EN -> DE) für Zugriff auf data.prüfung.art_28
 const CANON_MAP: Record<string, string> = {
   instructions_only: "weisung",
   confidentiality: "vertraulichkeit",
@@ -35,12 +44,8 @@ export default function Page() {
   const chartRef = useRef<HTMLCanvasElement | null>(null);
   const chartInst = useRef<any>(null);
 
-  const disabledByExtraction = Boolean(data?.extraction_failed);
-
-  // --- Statuszählung (Deutsch)
+  // ---- KPIs aus den Labels (deutsch) ----
   const kpis = useMemo(() => {
-    if (!data || disabledByExtraction)
-      return { erfüllt: 0, teilweise: 0, fehlt: 0, total: Object.keys(ART28_KEYS).length, any: false };
     const a28 = data?.prüfung?.art_28 || {};
     const statuses = Object.values(a28).map((x: any) => x?.status || "");
     const erfüllt = statuses.filter((s) => s === "erfüllt").length;
@@ -48,33 +53,58 @@ export default function Page() {
     const fehlt = statuses.filter((s) => s === "fehlt").length;
     const total = Object.keys(ART28_KEYS).length;
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
-  }, [data, disabledByExtraction]);
+  }, [data]);
 
-  // Risiko nur zeigen, wenn es Daten gibt und keine Extraktionsprobleme
-  const risikoServer = disabledByExtraction ? null : (data?.risiko_score?.gesamt ?? data?.risk_score?.overall ?? null);
-  const risikoClient = useMemo(() => {
-    if (!kpis.any || disabledByExtraction) return null;
-    const start = 100;
-    const val = start + kpis.teilweise * -10 + kpis.fehlt * -25;
-    return Math.max(0, Math.min(100, Math.round(val)));
-  }, [kpis, disabledByExtraction]);
+  // ---- Compliance & Risiko ----
+  const complianceFromServer: number | null =
+    (typeof data?.compliance_score?.overall === "number" && data?.compliance_score?.overall >= 0)
+      ? data.compliance_score.overall
+      : null;
 
-  const risk = risikoServer ?? risikoClient;
-  const riskBar = risk == null ? 0 : risk;
+  const complianceFallback: number | null = useMemo(() => {
+    if (!kpis.any) return null;
+    // Spiegel-Logik zur Serverberechnung: erfüllt=1, teilweise=0.5, fehlt=0
+    const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
+    let score = (achieved / Object.keys(ART28_KEYS).length) * 100;
+
+    // Zusatzklauseln grob berücksichtigen, wenn vorhanden
+    const extras = data?.prüfung?.zusatzklauseln || {};
+    const intl = extras?.["internationale_übermittlungen"]?.status;
+    if (intl === "erfüllt") score += 10;
+    else if (intl === "teilweise") score += 5;
+    else if (intl === "vorhanden") score += 3;
+
+    const liab = extras?.["haftungsbegrenzung"]?.status;
+    if (liab === "erfüllt" || liab === "vorhanden") score += 3;
+
+    const juris = extras?.["gerichtsstand_recht"]?.status;
+    if (juris === "erfüllt" || juris === "vorhanden") score += 2;
+
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }, [kpis, data?.prüfung?.zusatzklauseln]);
+
+  const compliance = complianceFromServer ?? complianceFallback;
+
+  const riskFromServer: number | null =
+    typeof data?.risiko_score?.gesamt === "number" ? data.risiko_score.gesamt
+    : typeof data?.risk_score?.overall === "number" && data?.risk_score?.type === "risk" ? data.risk_score.overall
+    : null;
+
+  const risk = riskFromServer ?? (compliance != null ? Math.max(0, 100 - compliance) : null);
+
+  const compColor =
+    compliance == null ? "text-secondary" : compliance >= 80 ? "text-success" : compliance >= 50 ? "text-warning" : "text-danger";
   const riskColor =
     risk == null ? "text-secondary" : risk <= 40 ? "text-success" : risk <= 70 ? "text-warning" : "text-danger";
 
-  // Chart
+  // ---- Doughnut-Chart ----
   const donut = useMemo(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
   useEffect(() => {
     const Chart = (window as any).Chart as any;
     if (!Chart || !chartRef.current) return;
 
-    if (!data || !kpis.any || disabledByExtraction) {
-      if (chartInst.current) {
-        chartInst.current.destroy();
-        chartInst.current = null;
-      }
+    if (!data || !kpis.any) {
+      if (chartInst.current) { chartInst.current.destroy(); chartInst.current = null; }
       return;
     }
 
@@ -101,9 +131,9 @@ export default function Page() {
         cutout: "65%",
       },
     });
-  }, [donut, data, kpis.any, disabledByExtraction]);
+  }, [donut, data, kpis.any]);
 
-  // Upload
+  // ---- Upload ----
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -138,6 +168,8 @@ export default function Page() {
     return <span className="badge bg-secondary">—</span>;
   };
 
+  const rationale = data?.risk_rationale || data?.risk_score?.rationale || "—";
+
   return (
     <div className="container py-4">
       {/* Header */}
@@ -165,50 +197,43 @@ export default function Page() {
                 </div>
               )}
               {err && <div className="mt-2 text-danger"><i className="bi bi-exclamation-triangle me-2" />{err}</div>}
-
-              {/* WARNBANNER BEI EXTRAKTIONSFEHLER */}
-              {data?.extraction_failed && (
-                <div className="alert alert-warning mt-3" role="alert">
-                  <i className="bi bi-info-circle me-2" />
-                  {data?.message ||
-                    "Die Datei konnte nicht zuverlässig gelesen werden (möglicherweise gescannt oder verschlüsselt). Bitte eine durchsuchbare PDF hochladen."}
-                </div>
-              )}
             </div>
 
             <div className="d-flex flex-wrap gap-3">
-              <div className="card p-3" style={{ minWidth: 180 }}>
-                <div className="muted">Risiko</div>
-                <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
-                {risk == null ? (
+              {/* Compliance */}
+              <div className="card p-3" style={{ minWidth: 200 }}>
+                <div className="muted">Compliance</div>
+                <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
+                {compliance == null ? (
                   <div className="mt-1 small muted">No data</div>
                 ) : (
-                  <div className="progress" role="progressbar" aria-valuenow={riskBar} aria-valuemin={0} aria-valuemax={100}>
+                  <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
                     <div
-                      className={`progress-bar ${risk <= 40 ? "bg-success" : risk <= 70 ? "bg-warning" : "bg-danger"}`}
-                      style={{ width: `${riskBar}%` }}
+                      className={`progress-bar ${compliance >= 80 ? "bg-success" : compliance >= 50 ? "bg-warning" : "bg-danger"}`}
+                      style={{ width: `${compliance}%` }}
                     />
                   </div>
                 )}
               </div>
 
-              <div className="card p-3" style={{ minWidth: 220 }}>
-                <div className="muted">Art. 28 Status</div>
-                <div className="d-flex align-items-center gap-2">
-                  {disabledByExtraction ? (
-                    <span className="muted">Keine Daten</span>
-                  ) : (
-                    <>
-                      <span className="badge" style={{ background: "#14532d" }}>erfüllt {kpis.erfüllt}</span>
-                      <span className="badge" style={{ background: "#7c2d12" }}>teilweise {kpis.teilweise}</span>
-                      <span className="badge" style={{ background: "#7f1d1d" }}>fehlt {kpis.fehlt}</span>
-                    </>
-                  )}
-                </div>
-                <small className="muted">von {kpis.total} Kategorien</small>
+              {/* Risiko */}
+              <div className="card p-3" style={{ minWidth: 200 }}>
+                <div className="muted">Risiko</div>
+                <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
+                {risk == null ? (
+                  <div className="mt-1 small muted">No data</div>
+                ) : (
+                  <div className="progress" role="progressbar" aria-valuenow={risk} aria-valuemin={0} aria-valuemax={100}>
+                    <div
+                      className={`progress-bar ${risk <= 40 ? "bg-success" : risk <= 70 ? "bg-warning" : "bg-danger"}`}
+                      style={{ width: `${risk}%` }}
+                    />
+                  </div>
+                )}
               </div>
 
-              <div className="card p-3" style={{ minWidth: 220 }}>
+              {/* Vertragsinformationen */}
+              <div className="card p-3" style={{ minWidth: 240 }}>
                 <div className="muted">Vertrags­informationen</div>
                 <div className="fw-semibold">{data?.vertrag_metadata?.titel || "—"}</div>
                 <div className="muted small">{data?.vertrag_metadata?.datum || "—"}</div>
@@ -224,11 +249,7 @@ export default function Page() {
           <div className="card h-100">
             <div className="card-body">
               <h2 className="h6 mb-3">Statusverteilung (Art. 28)</h2>
-              {data && kpis.any && !disabledByExtraction ? (
-                <canvas ref={chartRef} height={220} />
-              ) : (
-                <div className="muted">Noch keine Daten</div>
-              )}
+              {data && kpis.any ? <canvas ref={chartRef} height={220} /> : <div className="muted">Noch keine Daten</div>}
               <div className="mt-2 small muted">
                 <span style={{ color: "#16a34a" }}>■</span> erfüllt&nbsp;&nbsp;
                 <span style={{ color: "#f59e0b" }}>■</span> teilweise&nbsp;&nbsp;
@@ -241,9 +262,7 @@ export default function Page() {
           <div className="card h-100">
             <div className="card-body">
               <h2 className="h6 mb-2">Executive Summary</h2>
-              <p className="mb-0" style={{ color: "var(--text)" }}>
-                {disabledByExtraction ? "—" : (data?.risk_rationale || data?.risk_score?.rationale || "—")}
-              </p>
+              <p className="mb-0" style={{ color: "var(--text)" }}>{rationale}</p>
             </div>
           </div>
         </div>
@@ -255,12 +274,8 @@ export default function Page() {
           <h2 className="h6">Vertragsinformationen</h2>
           <div className="row">
             <div className="col-md-6">
-              <div>
-                <span className="muted">Titel:</span> {data?.vertrag_metadata?.titel || "—"}
-              </div>
-              <div>
-                <span className="muted">Datum:</span> {data?.vertrag_metadata?.datum || "—"}
-              </div>
+              <div><span className="muted">Titel:</span> {data?.vertrag_metadata?.titel || "—"}</div>
+              <div><span className="muted">Datum:</span> {data?.vertrag_metadata?.datum || "—"}</div>
             </div>
             <div className="col-md-6">
               <div className="muted">Parteien</div>
@@ -269,9 +284,7 @@ export default function Page() {
               ) : (
                 <ul className="mb-0">
                   {(data?.vertrag_metadata?.parteien || []).map((p: any, i: number) => (
-                    <li key={i} className="text-white">
-                      {p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}
-                    </li>
+                    <li key={i} className="text-white">{p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}</li>
                   ))}
                 </ul>
               )}
@@ -284,7 +297,7 @@ export default function Page() {
       <div className="card mb-4">
         <div className="card-body">
           <h2 className="h6 mb-3">Prüfmatrix (Art. 28 Abs. 3)</h2>
-        {!data ? (
+          {!data ? (
             <div className="muted">Noch keine Daten</div>
           ) : (
             <div className="table-responsive">
@@ -299,8 +312,7 @@ export default function Page() {
                 <tbody>
                   {Object.entries(ART28_KEYS).map(([k, label]) => {
                     const canon = CANON_MAP[k] ?? k;
-                    const f: Clause | undefined =
-                      data?.prüfung?.art_28?.[canon] ?? data?.findings?.art_28?.[k];
+                    const f: Clause | undefined = data?.prüfung?.art_28?.[canon] ?? data?.findings?.art_28?.[k];
                     const belege = f?.belege ?? f?.evidence ?? [];
                     return (
                       <tr key={k}>
@@ -399,12 +411,7 @@ export default function Page() {
           {showRaw && (
             <pre
               className="mt-3 p-3 rounded"
-              style={{
-                background: "#0b0e14",
-                border: "1px solid #1d2540",
-                color: "var(--text)",
-                whiteSpace: "pre-wrap",
-              }}
+              style={{ background: "#0b0e14", border: "1px solid #1d2540", color: "var(--text)", whiteSpace: "pre-wrap" }}
             >
               {JSON.stringify(data, null, 2)}
             </pre>

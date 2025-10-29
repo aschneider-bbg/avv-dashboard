@@ -310,24 +310,45 @@ function normalizeAgentLike(json: any) {
   return out;
 }
 
-/* ---------- Risiko (deterministisch, falls Modell nichts liefert) ---------- */
-const WEIGHTS = { erfüllt: 0, teilweise: -10, fehlt: -25 };
-function calcRisk(norm: any): number | null {
+/* ---------- Compliance-Score (deterministisch) ---------- */
+function computeComplianceScore(norm: any): number | null {
+  const a28 = norm?.prüfung?.art_28 || {};
   const keys = [
-    "weisung", "vertraulichkeit", "toms", "unterauftragsverarbeiter",
-    "betroffenenrechte", "vorfallmeldung", "löschung_rückgabe", "audit_nachweis",
+    "weisung",
+    "vertraulichkeit",
+    "toms",
+    "unterauftragsverarbeiter",
+    "betroffenenrechte",
+    "vorfallmeldung",
+    "löschung_rückgabe",
+    "audit_nachweis",
   ];
-  let seen = 0;
-  let s = 100;
+
+  let sum = 0;
+  let count = 0;
   for (const k of keys) {
-    const st = norm?.art_28?.[k]?.status;
+    const st = a28[k]?.status;
     if (!st) continue;
-    seen++;
-    if (st === "teilweise") s += WEIGHTS.teilweise;
-    else if (st === "fehlt") s += WEIGHTS.fehlt;
+    count++;
+    if (st === "erfüllt") sum += 1.0;
+    else if (st === "teilweise") sum += 0.5;
   }
-  if (seen === 0) return null;
-  return Math.max(0, Math.min(100, Math.round(s)));
+  if (count === 0) return null;
+  let compliance = (sum / keys.length) * 100;
+
+  const extras = norm?.prüfung?.zusatzklauseln || {};
+  const intl = extras["internationale_übermittlungen"]?.status;
+  if (intl === "erfüllt") compliance += 10;
+  else if (intl === "teilweise") compliance += 5;
+  else if (intl === "vorhanden") compliance += 3;
+
+  const liab = extras["haftungsbegrenzung"]?.status;
+  if (liab === "erfüllt" || liab === "vorhanden") compliance += 3;
+
+  const juris = extras["gerichtsstand_recht"]?.status;
+  if (juris === "erfüllt" || juris === "vorhanden") compliance += 2;
+
+  return Math.max(0, Math.min(100, Math.round(compliance)));
 }
 
 /* ---------------- Handler ---------------- */
@@ -394,25 +415,33 @@ export async function POST(req: NextRequest) {
     // (4) In DE-UI-Format normalisieren (Agent-ähnlich → DE)
     const norm = normalizeAgentLike(modelJson);
 
-    // (5) Risiko: bevorzugt vom Modell, sonst deterministisch
-    const providedRisk = modelJson?.risk_score?.overall;
-    const computedRisk = calcRisk(norm.prüfung);
-    const riskFinal = (typeof providedRisk === "number") ? providedRisk : computedRisk;
+    // (5) Compliance-Score und Risiko
+    const compliance = computeComplianceScore(norm);
+    const risk = compliance == null ? null : (100 - compliance);
 
     const result = {
       vertrag_metadata: norm.vertrag_metadata,
       prüfung: norm.prüfung,
       actions: norm.actions ?? [],
-      risk_rationale: modelJson?.risk_score?.rationale ?? (computedRisk == null ? "Keine zuverlässige Bewertung möglich (zu wenig Text erkannt)." : null),
-      risiko_score: riskFinal == null ? null : {
-        gesamt: riskFinal,
-        typ: "risiko",
-        erklärung: "Berechnung: erfüllt=0, teilweise=-10, fehlt=-25 (Startwert 100, 0–100).",
+      risk_rationale:
+        modelJson?.risk_rationale ??
+        modelJson?.risk_score?.rationale ??
+        (compliance == null ? "Keine verlässliche Bewertung möglich (zu wenig Text erkannt)." : null),
+
+      compliance_score: compliance == null ? null : {
+        overall: compliance,
+        type: "compliance",
       },
-      // Kompatibilität
-      risk_score: riskFinal == null ? null : {
-        overall: riskFinal,
-        rationale: modelJson?.risk_score?.rationale ?? null,
+
+      risiko_score: risk == null ? null : {
+        gesamt: risk,
+        typ: "risiko",
+        erklärung: "Ableitung: Risiko = 100 - Compliance. Hoher Compliance-Score bedeutet geringes Risiko.",
+      },
+
+      risk_score: risk == null ? null : {
+        overall: risk,
+        rationale: modelJson?.risk_rationale ?? modelJson?.risk_score?.rationale ?? null,
         type: "risk",
       },
     };

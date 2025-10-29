@@ -30,104 +30,6 @@ const KEYWORDS: Record<string, string[]> = {
   jurisdiction: ["Gerichtsstand", "anwendbares Recht", "Rechtswahl", "Jurisdiction", "Governing Law"],
 };
 
-/* ---------- Responses API: JSON Schema (Agent-Builder-Format) ---------- */
-const RESPONSE_JSON_SCHEMA = {
-  name: "AVVSchema",
-  schema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      contract_metadata: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          title: { type: "string" },
-          date: { type: "string" },
-          parties: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                role: { type: "string", enum: ["controller", "processor", "other"] },
-                name: { type: "string" },
-                country: { type: "string" },
-              },
-              required: ["role", "name"],
-            },
-          },
-        },
-        required: ["title", "date", "parties"],
-      },
-      findings: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          art_28: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              instructions_only: statusBlock(),
-              confidentiality: statusBlock(),
-              security_TOMs: statusBlock(),
-              subprocessors: statusBlock(),
-              data_subject_rights_support: statusBlock(),
-              breach_support: statusBlock(),
-              deletion_return: statusBlock(),
-              audit_rights: statusBlock(),
-            },
-            required: [
-              "instructions_only",
-              "confidentiality",
-              "security_TOMs",
-              "subprocessors",
-              "data_subject_rights_support",
-              "breach_support",
-              "deletion_return",
-              "audit_rights",
-            ],
-          },
-          additional_clauses: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              international_transfers: statusBlock(["met", "partial", "missing", "present", "not_found"]),
-              liability_cap: statusBlock(["met", "partial", "missing", "present", "not_found"]),
-              jurisdiction: statusBlock(["met", "partial", "missing", "present", "not_found"]),
-            },
-            required: ["international_transfers", "liability_cap", "jurisdiction"],
-          },
-        },
-        required: ["art_28", "additional_clauses"],
-      },
-      risk_score: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          overall: { type: "number" },
-          rationale: { type: "string" },
-        },
-        required: ["overall", "rationale"],
-      },
-      actions: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            severity: { type: "string", enum: ["high", "medium", "low"] },
-            issue: { type: "string" },
-            suggested_clause: { type: "string" },
-          },
-          required: ["severity", "issue", "suggested_clause"],
-        },
-      },
-    },
-    required: ["contract_metadata", "findings", "risk_score", "actions"],
-  },
-  strict: true,
-} as const;
-
 function statusBlock(statuses: string[] = ["met", "partial", "missing"]) {
   return {
     type: "object",
@@ -151,7 +53,6 @@ function statusBlock(statuses: string[] = ["met", "partial", "missing"]) {
   };
 }
 
-// <-- reines JSON-Schema
 const AVV_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -245,7 +146,7 @@ const AVV_JSON_SCHEMA = {
   required: ["contract_metadata", "findings", "risk_score", "actions"],
 } as const;
 
-// <-- das Format-Objekt, wie es die Responses API erwartet
+/** EINMALIG lassen! */
 const JSON_FORMAT = {
   type: "json_schema",
   name: "AVVSchema",
@@ -253,15 +154,6 @@ const JSON_FORMAT = {
   schema: AVV_JSON_SCHEMA,
 } as const;
 
-/** NEU: Format-Objekt mit name auf der richtigen Ebene */
-const JSON_FORMAT = {
-  type: "json_schema",
-  name: "AVVSchema",
-  json_schema: {
-    strict: true,
-    schema: AVV_JSON_SCHEMA,
-  },
-} as const;
 
 /* ---------- PDF-Extraktion (ohne Worker) ---------- */
 async function extractPdf(file: ArrayBuffer): Promise<{ joined: string; pages: string[] }> {
@@ -464,6 +356,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: process.env.OPENAI_MODEL ?? "gpt-4.1",
         temperature: 0,
+
         top_p: 1,
         max_output_tokens: 5000,
         input: [

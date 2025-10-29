@@ -10,27 +10,13 @@ export const dynamic = "force-dynamic";
 ------------------------------------------------------------- */
 // --- Hilfsfunktion: PDF -> Text (robust, ohne Worker) ---
 async function pdfToText(file: File): Promise<string> {
-  const { getDocument } = await import("pdfjs-dist");
-  // Manuell Worker deaktivieren, damit Vercel nicht versucht, .mjs zu laden
-  (globalThis as any).PDFJS = { disableWorker: true };
-
-  const data = new Uint8Array(await file.arrayBuffer());
-  const loadingTask = getDocument({ data });
-  const pdf = await loadingTask.promise;
-  let text = "";
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const pageText = content.items.map((it: any) => it.str).join(" ");
-    text += `\n\nSeite ${i}:\n${pageText}`;
-  }
-
-  if (!text.trim()) {
+  const pdfParse = (await import("pdf-parse")).default;
+  const buf = Buffer.from(await file.arrayBuffer());
+  const res = await pdfParse(buf);
+  if (!res || !res.text || !res.text.trim()) {
     throw new Error("PDF-Text leer oder unlesbar");
   }
-
-  return text.trim();
+  return res.text.trim();
 }
 
 /* ------------------------------------------------------------

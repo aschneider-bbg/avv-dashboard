@@ -156,14 +156,14 @@ export default function Page() {
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
   }, [data]);
 
-  // ---- Compliance & Risiko ----
-  const compliance = useMemo(() => {
+    // ---- Compliance & Risiko ----
+  // 1) Compliance aus Matrix berechnen (erfüllt=1, teilweise=0.5, fehlt=0)
+  const complianceMatrix = useMemo(() => {
     if (!kpis.any) return null;
-    // erfüllt=1, teilweise=0.5, fehlt=0
     const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
     let score = (achieved / kpis.total) * 100;
 
-    // Zusatzklauseln grob einfließen lassen
+    // Zusatzklauseln leicht gewichten
     const ex = data?.extras || {};
     const intl = ex["internationale_übermittlungen"]?.status;
     if (intl === "erfüllt") score += 10;
@@ -179,8 +179,32 @@ export default function Page() {
     return Math.max(0, Math.min(100, Math.round(score)));
   }, [kpis, data?.extras]);
 
-  const riskFromServer = data?.riskOverall ?? null;
-  const risk = riskFromServer ?? (compliance != null ? Math.max(0, 100 - compliance) : null);
+  // 2) Agent-Score (Agent-Builder liefert teils risk_score.overall als "positiven" Score)
+  const agentOverall = typeof (raw?.risk_score?.overall) === "number" ? raw.risk_score.overall : null;
+
+  // 3) Heuristik: Wenn agentOverall hoch ist und nahe an unserer Matrix-Compliance liegt,
+  //    dann interpretieren wir ihn als Compliance und leiten das Risiko davon ab.
+  const looksLikeCompliance =
+    agentOverall != null &&
+    complianceMatrix != null &&
+    agentOverall >= 60 &&
+    Math.abs(agentOverall - complianceMatrix) <= 30;
+
+  // 4) Finale Scores
+  const compliance = looksLikeCompliance ? agentOverall : complianceMatrix;
+
+  // Falls der Agent tatsächlich ein echtes Risiko liefert (niedriger Score), nutzen wir ihn;
+  // ansonsten inverse Ableitung aus Compliance
+  const serverRisk =
+    typeof data?.riskOverall === "number"
+      ? data.riskOverall
+      : typeof raw?.risk_score?.overall === "number" && !looksLikeCompliance
+      ? raw.risk_score.overall
+      : null;
+
+  const risk = serverRisk != null
+    ? serverRisk
+    : (compliance != null ? Math.max(0, 100 - compliance) : null);
 
   // Ampellogik
   const compColor =

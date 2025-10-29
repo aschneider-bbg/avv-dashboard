@@ -151,7 +151,7 @@ function statusBlock(statuses: string[] = ["met", "partial", "missing"]) {
   };
 }
 
-/** Reines JSON-Schema (ohne name); wird unten in JSON_FORMAT eingehängt */
+// <-- reines JSON-Schema
 const AVV_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -243,6 +243,14 @@ const AVV_JSON_SCHEMA = {
     },
   },
   required: ["contract_metadata", "findings", "risk_score", "actions"],
+} as const;
+
+// <-- das Format-Objekt, wie es die Responses API erwartet
+const JSON_FORMAT = {
+  type: "json_schema",
+  name: "AVVSchema",
+  strict: true,
+  schema: AVV_JSON_SCHEMA,
 } as const;
 
 /** NEU: Format-Objekt mit name auf der richtigen Ebene */

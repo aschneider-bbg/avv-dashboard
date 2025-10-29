@@ -158,10 +158,10 @@ function normalizeFromModel(json: any) {
   return out;
 }
 
-/* ---------------- PDF-Extraktion (robust) ---------------- */
 
+/* ---- PDF-Text pro Seite (pdfjs-dist v5, Node/Vercel, ohne Worker) ---- */
 async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
-  // Minimaler DOMMatrix-Stub für pdfjs unter Node
+  // DOMMatrix-Stub für Node
   if (typeof (globalThis as any).DOMMatrix === "undefined") {
     (globalThis as any).DOMMatrix = class {
       multiply() { return this; }
@@ -171,89 +171,21 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
     };
   }
 
-  const MAX_CHARS = 60000;
-  const MIN_USEFUL = 10;
+  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
-  // Helper: Seiten joinen & cappen
-  const joinPages = (pages: string[]) => {
-    const joined = pages.join("\n\n---\n\n");
-    return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
-  };
+  const uint8 = new Uint8Array(file);
+  const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
 
-  // 1) Primär: pdfjs-dist – zuerst mit disableCombineTextItems=false, dann true
-  try {
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    if (pdfjs?.GlobalWorkerOptions) {
-      pdfjs.GlobalWorkerOptions.workerSrc = undefined;
-    }
-
-    const tryPdfJs = async (disableCombineTextItems: boolean) => {
-      const uint8 = new Uint8Array(file);
-      const doc = await pdfjs.getDocument({
-        data: uint8,
-        isEvalSupported: false,
-        disableFontFace: true,
-        useSystemFonts: true,
-      }).promise;
-
-      const pages: string[] = [];
-      const maxPages = Math.min(doc.numPages, 120);
-      let total = 0;
-
-      for (let p = 1; p <= maxPages; p++) {
-        const page = await doc.getPage(p);
-        const content: any = await page.getTextContent({
-          includeMarkedContent: true,
-          disableCombineTextItems,
-        }).catch(() => ({ items: [] }));
-
-        const text: string = (content.items || [])
-          .map((it: any) => (typeof it?.str === "string" ? it.str : ""))
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
-
-        pages.push(`Seite ${p}:\n${text}`);
-        total += text.length;
-        if (total > MAX_CHARS) break;
-      }
-      const joined = joinPages(pages);
-      return joined && joined.replace(/\s/g, "").length >= MIN_USEFUL ? joined : "";
-    };
-
-    let out = await tryPdfJs(false);
-    if (!out) out = await tryPdfJs(true);
-    if (out) return out;
-  } catch (e) {
-    // pdfjs kann bei defektem XRef scheitern → weiter zum Fallback
-    // console.warn("pdfjs failed:", e);
+  const pages: string[] = [];
+  const maxPages = Math.min(doc.numPages, 80);
+  for (let p = 1; p <= maxPages; p++) {
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent().catch(() => ({ items: [] }));
+    const text = (content.items || []).map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
+    pages.push(`Seite ${p}:\n${text}`);
   }
-
-  // 2) Fallback: pdf-parse – tolerant splitten
-  try {
-    const pdfParse: any = (await import("pdf-parse")).default;
-    const buffer = Buffer.from(file);
-    const parsed: { text?: string } = await pdfParse(buffer);
-    const raw = (parsed?.text || "").replace(/\r/g, "");
-    if (raw && raw.replace(/\s/g, "").length >= MIN_USEFUL) {
-      const parts: string[] = raw.includes("\f")
-        ? raw.split("\f")
-        : raw.split(/\n{2,}/g);
-      const pages: string[] = parts
-        .map((t: string, i: number) => `Seite ${i + 1}:\n${t.replace(/\s+/g, " ").trim()}`)
-        .filter((s) => s.replace(/\s/g, "").length > 0);
-      const joined = joinPages(pages);
-      if (joined && joined.replace(/\s/g, "").length >= MIN_USEFUL) return joined;
-    }
-  } catch (e) {
-    // console.warn("pdf-parse failed:", e);
-  }
-
-  // 3) Letzter Ausweg: Wir geben wenigstens 1 "Seite" mit rohem Byte-Hinweis zurück,
-  // damit das Modell nicht komplett im Leeren steht (besser als harter Abbruch).
-  // Das triggert eine schwache, aber nicht leere Analyse und verhindert 500er.
-  return `Seite 1:
-(Keine extrahierbaren Textinhalte gefunden. PDF könnte nur aus gescannten Bildern bestehen oder beschädigt sein.)`;
+  const joined = pages.join("\n\n---\n\n");
+  return joined.length > 60000 ? joined.slice(0, 60000) : joined;
 }
 
 /* ---------------- Risiko/Compliance ---------------- */

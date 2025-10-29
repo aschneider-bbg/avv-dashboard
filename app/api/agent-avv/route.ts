@@ -5,37 +5,53 @@ import { Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// --- Hilfsfunktion: PDF -> Text (optional) ---
+/* ------------------------------------------------------------
+   PDF-Extraktion (robust mit pdfjs-dist, kein pdf-parse nötig)
+------------------------------------------------------------- */
 async function pdfToText(file: File): Promise<string> {
-  const pdfParse = (await import("pdf-parse")).default as any;
-  const buf = Buffer.from(await file.arrayBuffer());
-  const res = await pdfParse(buf).catch(() => null);
-  if (!res || !res.text || !res.text.trim()) {
-    throw new Error("PDF-Text leer oder nicht lesbar");
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class {
+      multiply() { return this; }
+      translate() { return this; }
+      scale() { return this; }
+      rotate() { return this; }
+    };
   }
-  return res.text;
+
+  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const uint8 = new Uint8Array(await file.arrayBuffer());
+  const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
+
+  const pages: string[] = [];
+  const maxPages = Math.min(doc.numPages, 60);
+  for (let p = 1; p <= maxPages; p++) {
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent().catch(() => ({ items: [] }));
+    const text = (content.items || []).map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
+    pages.push(`Seite ${p}: ${text}`);
+  }
+
+  const joined = pages.join("\n\n---\n\n").trim();
+  if (!joined) throw new Error("PDF-Text leer oder nicht lesbar");
+  return joined.length > 70000 ? joined.slice(0, 70000) : joined;
 }
 
-// --- Deinen Agent aus dem SDK exakt wie vorgegeben aufsetzen ---
+/* ------------------------------------------------------------
+   Agent-Konfiguration (exakt wie SDK-Vorlage)
+------------------------------------------------------------- */
 const avvCheckAgent = new Agent({
   name: "AVV-Check-Agent",
   instructions:
     "Prüft Auftragsverarbeitungsverträge (AVVs) automatisiert auf DSGVO-Konformität gemäß Art. 28 Abs. 3 DSGVO und erstellt strukturierte Risikoanalysen.",
   model: "gpt-5-chat-latest",
-  modelSettings: {
-    temperature: 0.3,
-    topP: 1,
-    maxTokens: 2048,
-    store: true,
-  },
+  modelSettings: { temperature: 0.3, topP: 1, maxTokens: 2048, store: true },
 });
 
-// Hybrid-Ausgabe → JSON extrahieren (Agent gibt zuerst Kurzbericht, danach JSON)
+/* ------------------------------------------------------------
+   JSON aus Agent-Antwort extrahieren
+------------------------------------------------------------- */
 function extractJsonBlock(output: string): any {
-  // Schneidet Codefences weg, falls vorhanden
   const cleaned = output.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
-
-  // Versuche, den letzten {...}-Block zu finden (robust bei vorgeschaltetem Kurzbericht)
   const start = cleaned.lastIndexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start >= 0 && end > start) {
@@ -43,10 +59,9 @@ function extractJsonBlock(output: string): any {
     try {
       return JSON.parse(candidate);
     } catch {
-      // Weiter unten noch eine generische Fehlermeldung
+      /* ignore */
     }
   }
-  // Fallback: evtl. ist es reines JSON
   try {
     return JSON.parse(cleaned);
   } catch {
@@ -54,38 +69,32 @@ function extractJsonBlock(output: string): any {
   }
 }
 
-// POST /api/agent-avv
+/* ------------------------------------------------------------
+   POST /api/agent-avv
+------------------------------------------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData().catch(() => null);
-
-    // Entweder Datei (PDF) oder Text akzeptieren
     let inputText = "";
+
     if (form) {
       const file = form.get("file") as File | null;
       const text = form.get("text") as string | null;
-
       if (file && file.type?.includes("pdf")) {
         inputText = await pdfToText(file);
       } else if (text && typeof text === "string" && text.trim()) {
         inputText = text.trim();
       }
     } else {
-      // JSON body mit { text: "..." } unterstützen
       const json = await req.json().catch(() => null);
-      if (json?.text && typeof json.text === "string") {
-        inputText = json.text.trim();
-      }
+      if (json?.text && typeof json.text === "string") inputText = json.text.trim();
     }
 
     if (!inputText) {
-      return NextResponse.json(
-        { error: "Kein Text und keine PDF übergeben." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Kein Text und keine PDF übergeben." }, { status: 400 });
     }
 
-    // ---- Agent ausführen (entspricht deinem SDK-Beispiel) ----
+    // ---- Agent ausführen (entspricht SDK-Beispiel) ----
     const conversationHistory: AgentInputItem[] = [
       { role: "user", content: [{ type: "input_text", text: inputText }] },
       {
@@ -93,8 +102,7 @@ export async function POST(req: NextRequest) {
         content: [
           {
             type: "output_text",
-            text:
-              `Rolle Du bist ein AVV-Prüfassistent. Prüfe hochgeladene Auftragsverarbeitungsverträge (AVV / DPA) auf DSGVO-Konformität gemäß Art. 28 Abs. 3 DSGVO und erstelle strukturierte Risiko- und Maßnahmenanalysen.
+            text: `Rolle Du bist ein AVV-Prüfassistent. Prüfe hochgeladene Auftragsverarbeitungsverträge (AVV / DPA) auf DSGVO-Konformität gemäß Art. 28 Abs. 3 DSGVO und erstelle strukturierte Risiko- und Maßnahmenanalysen.
 Verhalten
 Lies hochgeladene Dateien (PDF, DOCX, TXT) automatisch ein.
 Extrahiere relevante Passagen und prüfe systematisch folgende Kernpunkte:
@@ -108,7 +116,7 @@ Löschung / Rückgabe nach Vertragsende
 Nachweise / Audit
 Erweiterte Kriterien: Internationale Übermittlungen / SCCs, Haftungsbegrenzung, Gerichtsstand.
 Ausgabeformat (Hybrid-Antwort) Teil 1: Kurzbericht für Menschen (max. 10 Zeilen) Teil 2: JSON-Struktur mit:
-{   "contract_metadata": {"title": "...", "date": "...", "parties": [...]},   "risk_score": {"overall": 0–100, "rationale": "..."},   "findings": {"art_28": {...}, "additional_clauses": {...}},   "actions": [{"severity": "...", "issue": "...", "suggested_clause": "..."}] }
+{ "contract_metadata": {"title": "...", "date": "...", "parties": [...]}, "risk_score": {"overall": 0–100, "rationale": "..."}, "findings": {"art_28": {...}, "additional_clauses": {...}}, "actions": [{"severity": "...", "issue": "...", "suggested_clause": "..."}] }
 Richtlinien:
 Antworte zuerst mit einer menschlich verständlichen Zusammenfassung (deutsch, kompakt, klar).
 Danach folgt der vollständige JSON-Block.
@@ -126,18 +134,14 @@ Wenn kein Dokument hochgeladen wurde, erkläre das kurz und liefere Dummy-JSON m
       },
     });
 
-    const result = await withTrace("AVV-Check-Agent", async () => {
-      return runner.run(avvCheckAgent, conversationHistory);
-    });
+    const result = await withTrace("AVV-Check-Agent", async () =>
+      runner.run(avvCheckAgent, conversationHistory)
+    );
 
     if (!result?.finalOutput) {
-      return NextResponse.json(
-        { error: "Agent lieferte keine Ausgabe." },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: "Agent lieferte keine Ausgabe." }, { status: 502 });
     }
 
-    // JSON-Teil extrahieren und zurückgeben
     const json = extractJsonBlock(result.finalOutput);
     return NextResponse.json(json);
   } catch (e: any) {

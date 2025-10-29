@@ -46,8 +46,9 @@ Vorgaben:
  *  - zweiter Versuch mit geänderten Flags
  *  - Fallback auf pdf-parse (falls installiert)
  * ---------------------------------------------------------------- */
+/* ---- PDF-Text Seite-für-Seite mit Fallback auf pdf-parse ---- */
 async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
-  // DOMMatrix-Stub für Node (pdfjs erwartet es in einigen Pfaden)
+  // Manche Bundles/Umgebungen haben keine DOMMatrix: minimaler Stub
   if (typeof (globalThis as any).DOMMatrix === "undefined") {
     (globalThis as any).DOMMatrix = class {
       multiply() { return this; }
@@ -57,74 +58,85 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
     };
   }
 
-  const uint8 = new Uint8Array(file);
+  const MAX_CHARS = 60000;
+  const MIN_USEFUL = 120; // darunter gilt als „leer/ungenügend“
 
-  // 1) Versuch: pdfjs-dist (tolerant)
+  // 1) Primär: pdfjs-dist (seitenweise, ideal für unsere Prompts)
   try {
     const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-
-    const tryOnce = async (opts: any) => {
-      const task = pdfjs.getDocument({
-        data: uint8,
-        isEvalSupported: false,
-        stopAtErrors: false,    // <— wichtig gegen „bad XRef entry“
-        disableAutoFetch: true, // weniger Range-Fetch, robuster
-        ...opts,
-      });
-      const doc = await task.promise;
-
-      const maxPages = Math.min(doc.numPages, 80);
-      const pages: string[] = [];
-      let chars = 0;
-
-      for (let p = 1; p <= maxPages; p++) {
-        const page = await doc.getPage(p);
-        const content = await page.getTextContent().catch(() => ({ items: [] }));
-        const text = (content.items || [])
-          .map((it: any) => (typeof it.str === "string" ? it.str : ""))
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
-
-        chars += text.length;
-        pages.push(`Seite ${p}:\n${text}`);
-
-        if (chars > 60000) break; // harte Kappung
-      }
-
-      const joined = pages.join("\n\n---\n\n");
-      return joined.length > 60000 ? joined.slice(0, 60000) : joined;
-    };
-
-    try {
-      return await tryOnce({});
-    } catch {
-      // zweiter Versuch mit alternativen Optionen
-      return await tryOnce({ rangeChunkSize: 1 << 16, useSystemFonts: true });
+    // Fake-Worker im Node-Umfeld (Vercel): kein externer Worker
+    if (pdfjs.GlobalWorkerOptions) {
+      pdfjs.GlobalWorkerOptions.workerSrc = undefined;
     }
+
+    const uint8 = new Uint8Array(file);
+    const doc = await pdfjs.getDocument({
+      data: uint8,
+      isEvalSupported: false,
+      disableFontFace: true,
+      useSystemFonts: true,
+    }).promise;
+
+    const pages: string[] = [];
+    const maxPages = Math.min(doc.numPages, 120);
+    let total = 0;
+
+    for (let p = 1; p <= maxPages; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent({
+        includeMarkedContent: true,
+        disableCombineTextItems: false,
+      }).catch(() => ({ items: [] }));
+
+      const text = (content.items || [])
+        .map((it: any) => (typeof it.str === "string" ? it.str : ""))
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      pages.push(`Seite ${p}:\n${text}`);
+      total += text.length;
+      if (total > MAX_CHARS) break;
+    }
+
+    const joined = pages.join("\n\n---\n\n");
+    if (joined.length >= MIN_USEFUL) {
+      return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
+    }
+    // sonst Fallback versuchen
   } catch {
-    // falle zum Fallback durch
+    // Ignorieren – wir versuchen gleich pdf-parse
   }
 
-  // 2) Fallback: pdf-parse (wenn installiert)
+  // 2) Fallback: pdf-parse (robust bei „bad XRef“/linearisierten PDFs)
   try {
-    const mod: any = await import("pdf-parse").catch(() => null);
-    const pdfParse = mod?.default || mod;
-    if (pdfParse) {
-      const res = await pdfParse(Buffer.from(uint8));
-      const text = String(res?.text || "").replace(/\s+\n/g, "\n").trim();
-      if (text) {
-        const chunks = text.split(/\n{2,}/g).filter(Boolean).slice(0, 40);
-        const joined = chunks.map((t, i) => `Seite ${i + 1}:\n${t}`).join("\n\n---\n\n");
-        return joined.length > 60000 ? joined.slice(0, 60000) : joined;
-      }
-    }
-  } catch {
-    // Ignorieren, finaler Fallback unten
-  }
+    const pdfParse: any = (await import("pdf-parse")).default;
+    const buffer = Buffer.from(file);
+    const parsed = await pdfParse(buffer);
 
-  // 3) Letzter Fallback: leer
-  return "";
+    let text = (parsed?.text || "").replace(/\r/g, "");
+    if (!text || text.trim().length < MIN_USEFUL) {
+      throw new Error("pdf-parse liefert zu wenig Text");
+    }
+
+    // Seiten heuristisch schneiden (Formfeed oder große Lücken)
+    const parts =
+      text.includes("\f")
+        ? text.split("\f")
+        : text.split(/\n{2,}/g);
+
+    const pages = parts
+      .map((t, i) => `Seite ${i + 1}:\n${t.replace(/\s+/g, " ").trim()}`)
+      .filter(Boolean);
+
+    const joined = pages.join("\n\n---\n\n");
+    return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
+  } catch {
+    // 3) Letzte Eskalation: klarer Fehlerhinweis
+    throw new Error(
+      "PDF konnte nicht robust extrahiert werden"
+    );
+  }
 }
 
 /* ---------------- Normalisierung (EN/DE) ---------------- */

@@ -40,30 +40,36 @@ Vorgaben:
 - Nur das JSON, keine Markdown-Fences.
 `;
 
-/* ---- PDF-Text pro Seite (pdfjs-dist v5, Node/Vercel, ohne Worker) ---- */
+/* ---- PDF-Text pro Seite: robust ohne Worker mit pdf-parse ---- */
 async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
-  if (typeof (globalThis as any).DOMMatrix === "undefined") {
-    (globalThis as any).DOMMatrix = class {
-      multiply() { return this; }
-      translate() { return this; }
-      scale() { return this; }
-      rotate() { return this; }
-    };
-  }
+  const pdfParseMod = await import("pdf-parse");
+  const pdfParse = (pdfParseMod as any).default ?? (pdfParseMod as any);
 
-  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const uint8 = new Uint8Array(file);
-  const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
-
+  // Wir sammeln pro Seite den Text in ein Array
   const pages: string[] = [];
-  const maxPages = Math.min(doc.numPages, 80);
-  for (let p = 1; p <= maxPages; p++) {
-    const page = await doc.getPage(p);
-    const content = await page.getTextContent().catch(() => ({ items: [] }));
-    const text = (content.items || []).map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
-    pages.push(`Seite ${p}:\n${text}`);
+  const result = await pdfParse(Buffer.from(file), {
+    // pagerender gibt uns Text je Seite – ohne Browser-Worker
+    pagerender: async (pageData: any) => {
+      const tc = await pageData.getTextContent();
+      const text = (tc.items || []).map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
+      pages.push(text);
+      return ""; // wichtig: Rückgabewert wird von pdf-parse verworfen, wir nutzen `pages`
+    },
+    max: 80, // Hardcap: maximal 80 Seiten
+  });
+
+  // Fallback: falls pagerender nicht geliefert hat (z.B. sehr exotisches PDF)
+  if (pages.length === 0) {
+    const flat = String(result?.text || "").replace(/\s+/g, " ").trim();
+    if (!flat) return ""; // signalisiert "nichts extrahiert"
+    return `Seite 1:\n${flat.slice(0, 60000)}`;
   }
-  const joined = pages.join("\n\n---\n\n");
+
+  // Seiten zusammenbauen im bekannten Format "Seite N:"
+  const joined = pages
+    .map((t, i) => `Seite ${i + 1}:\n${t}`)
+    .join("\n\n---\n\n");
+
   return joined.length > 60000 ? joined.slice(0, 60000) : joined;
 }
 

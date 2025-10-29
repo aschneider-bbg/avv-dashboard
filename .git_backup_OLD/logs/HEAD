@@ -1,0 +1,4 @@
+47c2af2eecc416a84e3e735f68af25e3329a7235 23fa4417398ab618f59104f76da3a65473e3a4a9 Andre Schneider <andre.schneider@bitbasegroup.com> 1761753230 +0100	commit: chore: ignore build & node_modules; untrack artifacts
+23fa4417398ab618f59104f76da3a65473e3a4a9 fc5d83db02da756f97fd13c4bce102dbfb60878e Andre Schneider <andre.schneider@bitbasegroup.com> 1761756042 +0100	commit: chore: ignore build & node_modules; untrack artifacts
+0000000000000000000000000000000000000000 d9c7a9a3cca704077603cf5aea1fc37142d537e1 Andre Schneider <andre.schneider@bitbasegroup.com> 1761756062 +0100	commit (initial): fresh: clean history without node_modules/build artifacts
+0000000000000000000000000000000000000000 ecbc33adc19fc472597e43f6e8e30dd13739ef90 Andre Schneider <andre.schneider@bitbasegroup.com> 1761756301 +0100	commit (initial): fresh: clean history without node_modules/build artifacts

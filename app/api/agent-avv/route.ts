@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Agent, run } from "@openai/agents";
 
-// Wichtig: Node-Runtime (kein Edge)
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// --- PDF -> Text (robust, ohne pdfjs) ---
+// --- PDF -> Text (ohne pdfjs) ---
 async function pdfToText(file: File): Promise<string> {
-  // pdf-parse hat ein Default-Export
   const pdfParse = (await import("pdf-parse")).default as any;
   const buf = Buffer.from(await file.arrayBuffer());
   const res = await pdfParse(buf).catch(() => null);
@@ -17,32 +15,82 @@ async function pdfToText(file: File): Promise<string> {
   return res.text;
 }
 
-// --- OpenAI Agent ---
+// --- Agent ---
 const avvCheckAgent = new Agent({
   name: "AVV-Check-Agent",
   instructions:
     "Prüft Auftragsverarbeitungsverträge (AVVs) automatisiert auf DSGVO-Konformität gemäß Art. 28 Abs. 3 DSGVO und erstellt strukturierte Risikoanalysen.",
   model: "gpt-5-chat-latest",
   modelSettings: {
-    temperature: 0.3,
+    temperature: 0,     // strikt für deterministischere JSON-Ausgabe
     topP: 1,
     maxTokens: 2048,
-    store: true,
+    store: false,
   },
 });
 
-// Hybrid-Ausgabe → JSON extrahieren (Agent gibt häufig erst Kurzbericht, dann JSON)
+/** Robuster JSON-Extractor:
+ *  1) Sucht ```json fenced code.
+ *  2) Sucht ersten '{' und läuft mit Klammer-Balancing (beachtet Strings/Escapes).
+ *  3) Letzter Versuch: kleine Bereinigung (BOM, Smartquotes, trailing commas).
+ */
 function extractJsonBlock(output: string): any {
-  const cleaned = output.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
-  const start = cleaned.lastIndexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    const candidate = cleaned.slice(start, end + 1);
-    try { return JSON.parse(candidate); } catch {}
+  const text = (output ?? "").trim();
+
+  // 1) Fenced JSON: ```json ... ```
+  const fenceMatch = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    const fenced = fenceMatch[1].trim();
+    try { return JSON.parse(fenced); } catch { /* fallback below */ }
   }
-  try { return JSON.parse(cleaned); } catch {
+
+  // 2) Klammer-Balancing ab erstem '{'
+  const start = text.indexOf("{");
+  if (start !== -1) {
+    let i = start, depth = 0, inStr = false, esc = false;
+    const s = text;
+    for (; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) { esc = false; }
+        else if (ch === "\\") { esc = true; }
+        else if (ch === "\"") { inStr = false; }
+      } else {
+        if (ch === "\"") inStr = true;
+        else if (ch === "{") depth++;
+        else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            const candidate = s.slice(start, i + 1);
+            try { return JSON.parse(candidate); } catch {
+              // 3) sanfte Bereinigung und zweiter Parse-Versuch
+              const cleaned = cleanJson(candidate);
+              return JSON.parse(cleaned);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 3) Letzter Versuch: kompletten Text säubern und parsen
+  const cleanedAll = cleanJson(text);
+  try { return JSON.parse(cleanedAll); } catch {
     throw new Error("Konnte keinen gültigen JSON-Block aus der Agent-Antwort extrahieren.");
   }
+}
+
+function cleanJson(s: string): string {
+  let t = s;
+  // BOM entfernen
+  t = t.replace(/^\uFEFF/, "");
+  // „smarte“ Anführungszeichen -> normale
+  t = t.replace(/[“”]/g, "\"").replace(/[‘’]/g, "'");
+  // trailing commas entfernen ( ,}  oder ,] )
+  t = t.replace(/,\s*([}\]])/g, "$1");
+  // Codefences, falls noch drin
+  t = t.replace(/```json|```/g, "");
+  return t.trim();
 }
 
 // POST /api/agent-avv
@@ -71,40 +119,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Kein Text und keine PDF übergeben." }, { status: 400 });
     }
 
-    // Ein einfacher Prompt, der die Agent-„Hybrid“-Antwort (Kurzbericht + JSON) erzwingt
+    // WICHTIG: JSON-ONLY Prompt, keine Kurzsummary mehr
     const prompt = `
-Rolle
-Du bist ein AVV-Prüfassistent. Prüfe den folgenden AVV-Text auf DSGVO-Konformität (Art. 28 Abs. 3) und liefere am Ende einen JSON-Block.
-
-Prüfkategorien (Kernauszug):
-- Weisungsrecht (“nur auf dokumentierte Weisung”)
-- Vertraulichkeit
-- Technische/organisatorische Maßnahmen (TOMs)
-- Sub-Prozessoren/Genehmigung
-- Unterstützung Betroffenenrechte
-- Unterstützung bei Datenschutzverletzungen (Art. 33/34)
-- Löschung/Rückgabe nach Vertragsende
-- Nachweise/Audit
-Erweiterte Kriterien:
-- Internationale Übermittlungen/SCCs
-- Haftungsbegrenzung
-- Gerichtsstand/Rechtswahl
-
-Ausgabeformat (Hybrid):
-1) Sehr kurze Zusammenfassung (deutsch, max. 10 Zeilen).
-2) Danach **nur** folgenden JSON-Block:
+Liefere **AUSSCHLIESSLICH** einen gültigen JSON-Block (kein Markdown, keine Erklärungen, keine Summary, keine Fences).
+Schema:
 {
   "contract_metadata": {"title": "...", "date": "...", "parties": [{"role": "...", "name": "...", "country": "..."}]},
   "findings": {
     "art_28": {
       "instructions_only": {"status": "met|partial|missing", "evidence": [{"quote": "...", "page": 1}]},
-      "confidentiality": {"status": "...", "evidence": []},
-      "security_TOMs": {"status": "...", "evidence": []},
-      "subprocessors": {"status": "...", "evidence": []},
-      "data_subject_rights_support": {"status": "...", "evidence": []},
-      "breach_support": {"status": "...", "evidence": []},
-      "deletion_return": {"status": "...", "evidence": []},
-      "audit_rights": {"status": "...", "evidence": []}
+      "confidentiality": {"status": "met|partial|missing", "evidence": []},
+      "security_TOMs": {"status": "met|partial|missing", "evidence": []},
+      "subprocessors": {"status": "met|partial|missing", "evidence": []},
+      "data_subject_rights_support": {"status": "met|partial|missing", "evidence": []},
+      "breach_support": {"status": "met|partial|missing", "evidence": []},
+      "deletion_return": {"status": "met|partial|missing", "evidence": []},
+      "audit_rights": {"status": "met|partial|missing", "evidence": []}
     },
     "additional_clauses": {
       "international_transfers": {"status": "present|partial|not_found|missing", "evidence": []},
@@ -115,14 +145,13 @@ Ausgabeformat (Hybrid):
   "risk_score": {"overall": 0-100, "rationale": "..."},
   "actions": [{"severity": "high|medium|low", "issue": "...", "suggested_clause": "..."}]
 }
-
-Wichtige Regeln:
-- Zitiere Belege mit kurzer Quote und (falls ersichtlich) Seitenzahl.
-- JSON **muss** valide sein, keine Kommentare/kein zusätzliches Markdown.
-
-Zu prüfender Vertragstext:
+Regeln:
+- Gib NUR den JSON-Block zurück (beginnt mit { und endet mit }).
+- Die JSON-Syntax MUSS valide sein (keine Kommentare, keine nachgestellten Kommas).
+- Zitiere Belege mit kurzer "quote" und – falls ersichtlich – "page" (Zahl).
+Text zur Prüfung:
 ${inputText}
-    `.trim();
+`.trim();
 
     const result = await run(avvCheckAgent, prompt);
 

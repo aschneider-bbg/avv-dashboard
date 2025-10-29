@@ -151,6 +151,110 @@ function statusBlock(statuses: string[] = ["met", "partial", "missing"]) {
   };
 }
 
+/** Reines JSON-Schema (ohne name); wird unten in JSON_FORMAT eingehängt */
+const AVV_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    contract_metadata: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        title: { type: "string" },
+        date: { type: "string" },
+        parties: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              role: { type: "string", enum: ["controller", "processor", "other"] },
+              name: { type: "string" },
+              country: { type: "string" },
+            },
+            required: ["role", "name"],
+          },
+        },
+      },
+      required: ["title", "date", "parties"],
+    },
+    findings: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        art_28: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            instructions_only: statusBlock(),
+            confidentiality: statusBlock(),
+            security_TOMs: statusBlock(),
+            subprocessors: statusBlock(),
+            data_subject_rights_support: statusBlock(),
+            breach_support: statusBlock(),
+            deletion_return: statusBlock(),
+            audit_rights: statusBlock(),
+          },
+          required: [
+            "instructions_only",
+            "confidentiality",
+            "security_TOMs",
+            "subprocessors",
+            "data_subject_rights_support",
+            "breach_support",
+            "deletion_return",
+            "audit_rights",
+          ],
+        },
+        additional_clauses: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            international_transfers: statusBlock(["met", "partial", "missing", "present", "not_found"]),
+            liability_cap: statusBlock(["met", "partial", "missing", "present", "not_found"]),
+            jurisdiction: statusBlock(["met", "partial", "missing", "present", "not_found"]),
+          },
+          required: ["international_transfers", "liability_cap", "jurisdiction"],
+        },
+      },
+      required: ["art_28", "additional_clauses"],
+    },
+    risk_score: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        overall: { type: "number" },
+        rationale: { type: "string" },
+      },
+      required: ["overall", "rationale"],
+    },
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          severity: { type: "string", enum: ["high", "medium", "low"] },
+          issue: { type: "string" },
+          suggested_clause: { type: "string" },
+        },
+        required: ["severity", "issue", "suggested_clause"],
+      },
+    },
+  },
+  required: ["contract_metadata", "findings", "risk_score", "actions"],
+} as const;
+
+/** NEU: Format-Objekt mit name auf der richtigen Ebene */
+const JSON_FORMAT = {
+  type: "json_schema",
+  name: "AVVSchema",
+  json_schema: {
+    strict: true,
+    schema: AVV_JSON_SCHEMA,
+  },
+} as const;
+
 /* ---------- PDF-Extraktion (ohne Worker) ---------- */
 async function extractPdf(file: ArrayBuffer): Promise<{ joined: string; pages: string[] }> {
   const pdfParseMod = await import("pdf-parse");
@@ -359,10 +463,7 @@ export async function POST(req: NextRequest) {
           { role: "user", content: [{ type: "input_text", text: userText }] },
         ],
         text: {
-          format: {
-            type: "json_schema",
-            json_schema: RESPONSE_JSON_SCHEMA,
-          },
+          format: JSON_FORMAT,
         },
       }),
     });

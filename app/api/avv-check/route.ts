@@ -135,7 +135,7 @@ const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden
   missing: "fehlt",
   present: "vorhanden",
   not_found: "nicht gefunden",
-  "not_found": "nicht gefunden",
+
   // deutsche Varianten
   erfüllt: "erfüllt",
   teilweise: "teilweise",

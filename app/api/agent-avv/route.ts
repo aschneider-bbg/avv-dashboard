@@ -1,22 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 
-// Wichtig: Node-Runtime (kein Edge)
+// WICHTIG: Node-Runtime (kein Edge)
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/* ------------------------------------------------------------
-   PDF-Extraktion (robust mit pdfjs-dist, kein pdf-parse nötig)
-------------------------------------------------------------- */
-// --- Hilfsfunktion: PDF -> Text (robust, ohne Worker) ---
-async function pdfToText(file: File): Promise<string> {
-  const pdfParse = (await import("pdf-parse")).default;
-  const buf = Buffer.from(await file.arrayBuffer());
-  const res = await pdfParse(buf);
-  if (!res || !res.text || !res.text.trim()) {
-    throw new Error("PDF-Text leer oder unlesbar");
+/** Polyfill für Node: pdfjs (indirekt via pdf-parse) erwartet DOMMatrix */
+function ensureDomMatrix() {
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class {
+      a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
+      multiply() { return this; }
+      translate() { return this; }
+      scale() { return this; }
+      rotate() { return this; }
+      invertSelf() { return this; }
+      toFloat32Array() { return new Float32Array([this.a, this.b, this.c, this.d, this.e, this.f]); }
+      toFloat64Array() { return new Float64Array([this.a, this.b, this.c, this.d, this.e, this.f]); }
+    };
   }
-  return res.text.trim();
+}
+
+/** PDF -> Text mit pdf-parse (lazy import NACH Polyfill) */
+async function pdfToText(file: File): Promise<string> {
+  ensureDomMatrix();
+
+  // Einige pdfjs-Bugs umgehen (kein Worker in Node)
+  (process as any).env.PDFJS_DISABLE_CREATEOBJECTURL = "true";
+  (process as any).env.PDFJS_WORKER_DISABLE = "true";
+
+  const pdfParse = (await import("pdf-parse")).default as any; // lazy, nachdem DOMMatrix existiert
+  const buf = Buffer.from(await file.arrayBuffer());
+  const res = await pdfParse(buf).catch((err: any) => {
+    throw new Error(`PDF konnte nicht gelesen werden: ${err?.message || String(err)}`);
+  });
+
+  const text = (res?.text || "").trim();
+  if (!text) throw new Error("PDF-Text leer oder nicht lesbar");
+  return text;
 }
 
 /* ------------------------------------------------------------

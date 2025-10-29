@@ -272,7 +272,7 @@ export default function Page() {
                 )}
               </div>
           {/* Rote Warnzeile bei schlechtem Ergebnis */}
-          {(compliance != null && compliance &lt; 60) || (risk != null && risk &gt; 60) ? (
+          {((compliance != null && compliance < 60) || (risk != null && risk > 60)) ? (
             <div className="w-100 mt-3 text-danger d-flex align-items-center" style={{ gap: 8 }}>
               <i className="bi bi-exclamation-triangle-fill"></i>
               <span className="small">Niedrige Vertragstreue / erhöhtes Risiko – Vertrag sollte dringend nachgeschärft werden.</span>

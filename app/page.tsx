@@ -156,14 +156,14 @@ export default function Page() {
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
   }, [data]);
 
-    // ---- Compliance & Risiko ----
-  // 1) Compliance aus Matrix berechnen (erfüllt=1, teilweise=0.5, fehlt=0)
+  // ---- Compliance & Risiko ----
+
+  // 1) Compliance aus Matrix berechnen (erfüllt=1, teilweise=0.5, fehlt=0) + leichte Gewichtung der Zusatzklauseln
   const complianceMatrix = useMemo(() => {
     if (!kpis.any) return null;
     const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
     let score = (achieved / kpis.total) * 100;
 
-    // Zusatzklauseln leicht gewichten
     const ex = data?.extras || {};
     const intl = ex["internationale_übermittlungen"]?.status;
     if (intl === "erfüllt") score += 10;
@@ -179,32 +179,37 @@ export default function Page() {
     return Math.max(0, Math.min(100, Math.round(score)));
   }, [kpis, data?.extras]);
 
-  // 2) Agent-Score (Agent-Builder liefert teils risk_score.overall als "positiven" Score)
-  const agentOverall = typeof (raw?.risk_score?.overall) === "number" ? raw.risk_score.overall : null;
+  // 2) Agent-Output: Manche Agent-Konfigurationen liefern risk_score.overall als POSITIVEN Score (Compliance)
+  const agentOverall: number | null =
+    typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : null;
 
-  // 3) Heuristik: Wenn agentOverall hoch ist und nahe an unserer Matrix-Compliance liegt,
-  //    dann interpretieren wir ihn als Compliance und leiten das Risiko davon ab.
-  const looksLikeCompliance =
-    agentOverall != null &&
-    complianceMatrix != null &&
-    agentOverall >= 60 &&
-    Math.abs(agentOverall - complianceMatrix) <= 30;
+  const rationaleText = (raw?.risk_score?.rationale || data?.riskRationale || "").toString().toLowerCase();
 
-  // 4) Finale Scores
-  const compliance = looksLikeCompliance ? agentOverall : complianceMatrix;
+  // Positiv-Tokens: wenn im Rationale-Text vorhanden, interpretieren wir agentOverall als Compliance
+  const POSITIVE_TOKENS = [
+    "deckt die wesentlichen anforderungen",
+    "wesentlichen anforderungen",
+    "anforderungen abgedeckt",
+    "weitgehend erfüllt",
+    "erfüllt",
+    "konform",
+    "entspricht art. 28",
+  ];
+  const mentionsPositive = POSITIVE_TOKENS.some((t) => rationaleText.includes(t));
+  const isLikelyComplianceScore = agentOverall != null && (agentOverall >= 60 || mentionsPositive) && mentionsPositive;
 
-  // Falls der Agent tatsächlich ein echtes Risiko liefert (niedriger Score), nutzen wir ihn;
-  // ansonsten inverse Ableitung aus Compliance
-  const serverRisk =
-    typeof data?.riskOverall === "number"
-      ? data.riskOverall
-      : typeof raw?.risk_score?.overall === "number" && !looksLikeCompliance
-      ? raw.risk_score.overall
-      : null;
+  // 3) Finale Compliance: Agent (wenn positiv erkannt) > Matrix-Fallback
+  const compliance = isLikelyComplianceScore ? agentOverall : complianceMatrix;
 
-  const risk = serverRisk != null
-    ? serverRisk
-    : (compliance != null ? Math.max(0, 100 - compliance) : null);
+  // 4) Risiko: Falls Agentwert negativ zu interpretieren ist, nutze ihn; sonst 100 - Compliance
+  const serverRiskClassic: number | null =
+    typeof data?.riskOverall === "number" ? data.riskOverall : null;
+
+  const risk = !isLikelyComplianceScore && agentOverall != null
+    ? agentOverall
+    : (serverRiskClassic != null
+        ? serverRiskClassic
+        : (compliance != null ? Math.max(0, 100 - compliance) : null));
 
   // Ampellogik
   const compColor =
@@ -264,7 +269,7 @@ export default function Page() {
     try {
       const body = new FormData();
       body.append("file", file);
-      // WICHTIG: Agent-Route verwenden (falls du beides behalten willst: auf /api/agent-avv zeigen)
+      // WICHTIG: Agent-Route verwenden
       const res = await fetch("/api/agent-avv", { method: "POST", body });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "API error");
@@ -281,7 +286,8 @@ export default function Page() {
     }
   };
 
-  const renderEvidence = (ev?: Evidence[]) => (ev || []).map((e) => `S.${e.page ?? "?"}: „${(e.quote || "").slice(0, 140)}…“`).join(" • ");
+  const renderEvidence = (ev?: Evidence[]) =>
+    (ev || []).map((e) => `S.${e.page ?? "?"}: „${(e.quote || "").slice(0, 140)}…“`).join(" • ");
 
   const badge = (s?: string) => {
     if (s === "erfüllt") return <span className="badge" style={{ background: "#14532d" }}>erfüllt</span>;

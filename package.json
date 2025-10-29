@@ -9,11 +9,11 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@openai/agents": "^0.2.0",
     "next": "14.2.11",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "pdfjs-dist": "^5.4.296",
-    "@openai/agents": "^0.2.0"  // falls du den Agent-Endpoint im selben Projekt nutzt
+    "pdfjs-dist": "^5.4.296"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",

@@ -40,17 +40,11 @@ Vorgaben:
 - Nur das JSON, keine Markdown-Fences.
 `;
 
-/* -------------------------------------------------------------------------- */
-/*  PDF-Text pro Seite (Node/Vercel-freundlich)                               */
-/*  - nutzt pdfjs-dist Legacy-Build (kein Worker)                             */
-/*  - DOMMatrix-Polyfill nur wenn nötig                                       */
-/*  - Fallback auf pdf-parse (ohne Seitenzahlen)                              */
-/* -------------------------------------------------------------------------- */
+/* ---- PDF-Text pro Seite (pdfjs-dist v5, Node/Vercel-kompatibel, ohne Worker) ---- */
 async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
-  // 1) Minimal-Polyfill für DOMMatrix, falls in Node nicht vorhanden
+  // Minimaler DOMMatrix-Stub – nur falls pdfjs danach fragt (Node hat das nicht)
   if (typeof (globalThis as any).DOMMatrix === "undefined") {
     (globalThis as any).DOMMatrix = class {
-      // reicht für pdfjs-Text-Extraktion (keine echten Matrix-OPs nötig)
       multiply() { return this; }
       translate() { return this; }
       scale() { return this; }
@@ -58,9 +52,10 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
     };
   }
 
-  // 2) Versuche: pdfjs-dist Legacy (CJS kompatibel in Node)
   try {
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.js");
+    // WICHTIG: v5 → legacy/build/pdf.mjs
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+
     const uint8 = new Uint8Array(file);
     const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
 
@@ -74,20 +69,20 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
     }
     const joined = pages.join("\n\n---\n\n");
     return joined.length > 60000 ? joined.slice(0, 60000) : joined;
-  } catch (err) {
-    // 3) Fallback: pdf-parse (kein DOM, aber auch keine Seitenzahlen)
+  } catch {
+    // Optionaler Fallback: pdf-parse (falls du das installiert hast)
     try {
       const pdfParse = (await import("pdf-parse")).default as any;
       const buf = Buffer.from(file);
       const r = await pdfParse(buf);
       const text = (r.text || "").replace(/\s+\n/g, "\n").trim();
       return `Seite 1:\n${text}`;
-    } catch (err2) {
-      // 4) Letzte Eskalation: gib kurzen Hinweis zurück
+    } catch {
       return "Seite 1:\n[PDF konnte serverseitig nicht extrahiert werden]";
     }
   }
 }
+
 
 /* ---------------- Normalisierung (EN/DE) ---------------- */
 const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden" | "nicht gefunden"> = {

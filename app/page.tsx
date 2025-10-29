@@ -172,27 +172,35 @@ export default function Page() {
   }, [donut, data, kpis.any]);
 
   // ---- Upload ----
-  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setErr(null);
-    setLoading(true);
-    try {
-      const body = new FormData();
-      body.append("file", file);
-      const res = await fetch("/api/avv-check", { method: "POST", body });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "API error");
-      setData(json);
-    } catch (e: any) {
-      setErr(e.message);
-      setData(null);
-    } finally {
-      setLoading(false);
-      e.target.value = "";
-      setInputKey((k) => k + 1);
+const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  setErr(null);
+  setLoading(true);
+  try {
+    const body = new FormData();
+    body.append("file", file);
+
+    // WICHTIG: jetzt Agent-Route benutzen
+    const res = await fetch("/api/agent-avv", { method: "POST", body });
+    const json = await res.json();
+
+    if (!res.ok) {
+      throw new Error(json?.error || "API error");
     }
-  };
+
+    // Der Agent liefert das Schema { contract_metadata, findings, risk_score, actions }
+    // Dein UI kann bereits beide Varianten lesen. Wir setzen die Antwort 1:1.
+    setData(json);
+  } catch (e: any) {
+    setErr(e.message);
+    setData(null);
+  } finally {
+    setLoading(false);
+    e.target.value = "";
+    setInputKey((k) => k + 1);
+  }
+};
 
   const renderEvidence = (ev?: Evidence[]) =>
     (ev || []).map((e) => `S.${e.page}: „${(e.quote || "").slice(0, 140)}…“`).join(" • ");

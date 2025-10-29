@@ -96,13 +96,17 @@ export async function POST(req: NextRequest) {
 
     // ---- Agent ausführen (entspricht SDK-Beispiel) ----
     const conversationHistory: AgentInputItem[] = [
-      { role: "user", content: [{ type: "input_text", text: inputText }] },
+  {
+    role: "user",
+    content: [{ type: "input_text", text: inputText }],
+    status: "completed",
+  },
+  {
+    role: "assistant",
+    content: [
       {
-        role: "assistant",
-        content: [
-          {
-            type: "output_text",
-            text: `Rolle Du bist ein AVV-Prüfassistent. Prüfe hochgeladene Auftragsverarbeitungsverträge (AVV / DPA) auf DSGVO-Konformität gemäß Art. 28 Abs. 3 DSGVO und erstelle strukturierte Risiko- und Maßnahmenanalysen.
+        type: "output_text",
+        text: `Rolle Du bist ein AVV-Prüfassistent. Prüfe hochgeladene Auftragsverarbeitungsverträge (AVV / DPA) auf DSGVO-Konformität gemäß Art. 28 Abs. 3 DSGVO und erstelle strukturierte Risiko- und Maßnahmenanalysen.
 Verhalten
 Lies hochgeladene Dateien (PDF, DOCX, TXT) automatisch ein.
 Extrahiere relevante Passagen und prüfe systematisch folgende Kernpunkte:
@@ -122,10 +126,11 @@ Antworte zuerst mit einer menschlich verständlichen Zusammenfassung (deutsch, k
 Danach folgt der vollständige JSON-Block.
 Keine anderen Texte außerhalb dieser Struktur.
 Wenn kein Dokument hochgeladen wurde, erkläre das kurz und liefere Dummy-JSON mit "missing".`,
-          },
-        ],
       },
-    ];
+    ],
+    status: "completed", // <- NEU
+  },
+];
 
     const runner = new Runner({
       traceMetadata: {

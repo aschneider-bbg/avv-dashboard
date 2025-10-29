@@ -2,29 +2,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Frontend Dashboard (Dark UI)
- * - Zeigt Compliance-Score (0–100, höher ist besser)
- * - Leitet Risiko = 100 - Compliance ab, wenn kein Server-Risiko vorhanden ist
- * - Deutsche Labels (erfüllt/teilweise/fehlt)
- * - Robuste Anzeige gegen verschiedene API-Formate
+ * AVV Dashboard (beide Schemas werden unterstützt)
+ * - Agent-Builder: { contract_metadata, findings{art_28, additional_clauses}, risk_score, actions }
+ * - Altes Schema:  { vertrag_metadata, prüfung{art_28, zusatzklauseln}, risiko_score/risk_score, actions }
+ * Wir normalisieren alles auf ein internes, deutsches Modell.
  */
 
-type Evidence = { quote: string; page: number };
+type Evidence = { quote: string; page?: number };
 type Clause = { status?: string; belege?: Evidence[]; evidence?: Evidence[] };
 
-const ART28_KEYS: Record<string, string> = {
-  instructions_only: "Weisung",
-  confidentiality: "Vertraulichkeit",
-  security_TOMs: "TOMs",
-  subprocessors: "Subprozessoren",
-  data_subject_rights_support: "Betroffenenrechte",
-  breach_support: "Breach-Unterstützung",
-  deletion_return: "Löschung/Rückgabe",
-  audit_rights: "Audit/Nachweis",
+const ART28_LABELS: Record<string, string> = {
+  weisung: "Weisung",
+  vertraulichkeit: "Vertraulichkeit",
+  toms: "TOMs",
+  unterauftragsverarbeiter: "Subprozessoren",
+  betroffenenrechte: "Betroffenenrechte",
+  vorfallmeldung: "Breach-Unterstützung",
+  löschung_rückgabe: "Löschung/Rückgabe",
+  audit_nachweis: "Audit/Nachweis",
 };
 
-// Kanonische Schlüssel (EN -> DE) für Zugriff auf data.prüfung.art_28
-const CANON_MAP: Record<string, string> = {
+const EN_TO_CANON: Record<string, keyof typeof ART28_LABELS> = {
   instructions_only: "weisung",
   confidentiality: "vertraulichkeit",
   security_TOMs: "toms",
@@ -35,8 +33,111 @@ const CANON_MAP: Record<string, string> = {
   audit_rights: "audit_nachweis",
 };
 
+const STATUS_EN_TO_DE: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden" | "nicht gefunden"> = {
+  met: "erfüllt",
+  partial: "teilweise",
+  missing: "fehlt",
+  present: "vorhanden",
+  "not_found": "nicht gefunden",
+};
+
+function mapStatus(v?: string) {
+  if (!v) return undefined;
+  const low = v.toLowerCase();
+  return (
+    STATUS_EN_TO_DE[low] ||
+    (["erfüllt", "teilweise", "fehlt", "vorhanden", "nicht gefunden"] as const).find((x) => x === low) ||
+    undefined
+  );
+}
+
+/** Normalisiert beliebige API-Antwort in ein gemeinsames deutsches Objekt */
+function normalize(input: any) {
+  // Metadata
+  const meta =
+    input?.vertrag_metadata ??
+    (input?.contract_metadata
+      ? {
+          titel: input.contract_metadata.title ?? "",
+          datum: input.contract_metadata.date ?? "",
+          parteien: (input.contract_metadata.parties ?? []).map((p: any) => ({
+            rolle:
+              p.role === "controller"
+                ? "Verantwortlicher"
+                : p.role === "processor"
+                ? "Auftragsverarbeiter"
+                : p.role ?? "",
+            name: p.name ?? "",
+            land: p.country ?? "",
+          })),
+        }
+      : {});
+
+  // Art. 28
+  const a28src = input?.prüfung?.art_28 ?? input?.findings?.art_28 ?? {};
+  const a28: Record<string, { status?: string; belege: Evidence[] }> = {};
+  // Deutsch direkt übernehmen
+  for (const k of Object.keys(ART28_LABELS)) {
+    const node = a28src[k];
+    if (node) {
+      a28[k] = {
+        status: mapStatus(node.status) ?? node.status,
+        belege: (node.belege ?? node.evidence ?? []) as Evidence[],
+      };
+    }
+  }
+  // Englisch -> Kanon
+  for (const k of Object.keys(a28src)) {
+    const canon = EN_TO_CANON[k];
+    if (canon && !a28[canon]) {
+      const node = a28src[k];
+      a28[canon] = {
+        status: mapStatus(node?.status) ?? node?.status,
+        belege: (node?.evidence ?? node?.belege ?? []) as Evidence[],
+      };
+    }
+  }
+
+  // Zusatzklauseln
+  const extrasSrc = input?.prüfung?.zusatzklauseln ?? input?.findings?.additional_clauses ?? {};
+  const extras = {
+    internationale_übermittlungen: extrasSrc?.internationale_übermittlungen ?? extrasSrc?.international_transfers,
+    haftungsbegrenzung: extrasSrc?.haftungsbegrenzung ?? extrasSrc?.liability_cap,
+    gerichtsstand_recht: extrasSrc?.gerichtsstand_recht ?? extrasSrc?.jurisdiction,
+  };
+  const extrasNorm: Record<string, { status?: string; belege: Evidence[] }> = {};
+  for (const [k, v] of Object.entries(extras)) {
+    if (!v) continue;
+    extrasNorm[k] = {
+      status: mapStatus((v as any).status) ?? (v as any).status,
+      belege: ((v as any).belege ?? (v as any).evidence ?? []) as Evidence[],
+    };
+  }
+
+  // Scores & rationale
+  const riskOverall =
+    typeof input?.risiko_score?.gesamt === "number"
+      ? input.risiko_score.gesamt
+      : typeof input?.risk_score?.overall === "number"
+      ? input.risk_score.overall
+      : null;
+  const riskRationale = input?.risk_rationale ?? input?.risk_score?.rationale ?? "";
+
+  const actions: any[] = input?.actions ?? [];
+
+  return {
+    meta,
+    a28,
+    extras: extrasNorm,
+    riskOverall,
+    riskRationale,
+    actions,
+  };
+}
+
 export default function Page() {
-  const [data, setData] = useState<any>(null);
+  const [raw, setRaw] = useState<any>(null);
+  const [data, setData] = useState<ReturnType<typeof normalize> | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
@@ -44,108 +145,67 @@ export default function Page() {
   const chartRef = useRef<HTMLCanvasElement | null>(null);
   const chartInst = useRef<any>(null);
 
-  // ---- KPIs aus den Labels (deutsch) ----
+  // ---- KPIs (aus normalisiertem Modell) ----
   const kpis = useMemo(() => {
-    const a28 = data?.prüfung?.art_28 || {};
-    const statuses = Object.values(a28).map((x: any) => x?.status || "");
+    const src = data?.a28 ?? {};
+    const statuses = Object.values(src).map((x) => x?.status || "");
     const erfüllt = statuses.filter((s) => s === "erfüllt").length;
     const teilweise = statuses.filter((s) => s === "teilweise").length;
     const fehlt = statuses.filter((s) => s === "fehlt").length;
-    const total = Object.keys(ART28_KEYS).length;
+    const total = Object.keys(ART28_LABELS).length;
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
   }, [data]);
 
   // ---- Compliance & Risiko ----
-  const complianceFromServer: number | null =
-    (typeof data?.compliance_score?.overall === "number" && data?.compliance_score?.overall >= 0)
-      ? data.compliance_score.overall
-      : null;
-
-  const complianceFallback: number | null = useMemo(() => {
+  const compliance = useMemo(() => {
     if (!kpis.any) return null;
-    // Spiegel-Logik zur Serverberechnung: erfüllt=1, teilweise=0.5, fehlt=0
+    // erfüllt=1, teilweise=0.5, fehlt=0
     const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
-    let score = (achieved / Object.keys(ART28_KEYS).length) * 100;
+    let score = (achieved / kpis.total) * 100;
 
-    // Zusatzklauseln grob berücksichtigen, wenn vorhanden
-    const extras = data?.prüfung?.zusatzklauseln || {};
-    const intl = extras?.["internationale_übermittlungen"]?.status;
+    // Zusatzklauseln grob einfließen lassen
+    const ex = data?.extras || {};
+    const intl = ex["internationale_übermittlungen"]?.status;
     if (intl === "erfüllt") score += 10;
     else if (intl === "teilweise") score += 5;
     else if (intl === "vorhanden") score += 3;
 
-    const liab = extras?.["haftungsbegrenzung"]?.status;
+    const liab = ex["haftungsbegrenzung"]?.status;
     if (liab === "erfüllt" || liab === "vorhanden") score += 3;
 
-    const juris = extras?.["gerichtsstand_recht"]?.status;
+    const juris = ex["gerichtsstand_recht"]?.status;
     if (juris === "erfüllt" || juris === "vorhanden") score += 2;
 
     return Math.max(0, Math.min(100, Math.round(score)));
-  }, [kpis, data?.prüfung?.zusatzklauseln]);
+  }, [kpis, data?.extras]);
 
-  const compliance = complianceFromServer ?? complianceFallback;
-
-  const riskFromServer: number | null =
-    typeof data?.risiko_score?.gesamt === "number" ? data.risiko_score.gesamt
-    : typeof data?.risk_score?.overall === "number" && data?.risk_score?.type === "risk" ? data.risk_score.overall
-    : null;
-
+  const riskFromServer = data?.riskOverall ?? null;
   const risk = riskFromServer ?? (compliance != null ? Math.max(0, 100 - compliance) : null);
 
-  // Neue, strengere Schwellen für klare Ampellogik
+  // Ampellogik
   const compColor =
-    compliance == null
-      ? "text-secondary"
-      : compliance >= 85
-      ? "text-success"
-      : compliance >= 70
-      ? "text-warning"
-      : "text-danger";
-
-  // Risiko: strenger, damit mittelmäßige Scores sichtbar kritisch wirken
+    compliance == null ? "text-secondary" : compliance >= 85 ? "text-success" : compliance >= 70 ? "text-warning" : "text-danger";
   const riskColor =
-    risk == null
-      ? "text-secondary"
-      : risk <= 20
-      ? "text-success"
-      : risk <= 40
-      ? "text-warning"
-      : "text-danger";
+    risk == null ? "text-secondary" : risk <= 20 ? "text-success" : risk <= 40 ? "text-warning" : "text-danger";
 
-  // Text-Labels unterhalb der KPIs
   const compLabel =
-    compliance == null
-      ? "—"
-      : compliance >= 85
-      ? "Hervorragend"
-      : compliance >= 70
-      ? "Solide"
-      : compliance >= 50
-      ? "Kritisch"
-      : "Schlecht";
-
+    compliance == null ? "—" : compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht";
   const riskLabel =
-    risk == null
-      ? "—"
-      : risk <= 15
-      ? "Sehr gering"
-      : risk <= 30
-      ? "Begrenzt"
-      : risk <= 60
-      ? "Erhöht"
-      : "Hoch";
+    risk == null ? "—" : risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch";
 
-  // ---- Doughnut-Chart ----
+  // Doughnut-Chart
   const donut = useMemo(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
   useEffect(() => {
     const Chart = (window as any).Chart as any;
     if (!Chart || !chartRef.current) return;
 
     if (!data || !kpis.any) {
-      if (chartInst.current) { chartInst.current.destroy(); chartInst.current = null; }
+      if (chartInst.current) {
+        chartInst.current.destroy();
+        chartInst.current = null;
+      }
       return;
     }
-
     if (chartInst.current) chartInst.current.destroy();
     chartInst.current = new Chart(chartRef.current, {
       type: "doughnut",
@@ -171,41 +231,35 @@ export default function Page() {
     });
   }, [donut, data, kpis.any]);
 
-  // ---- Upload ----
-const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  setErr(null);
-  setLoading(true);
-  try {
-    const body = new FormData();
-    body.append("file", file);
-
-    // WICHTIG: jetzt Agent-Route benutzen
-    const res = await fetch("/api/agent-avv", { method: "POST", body });
-    const json = await res.json();
-
-    if (!res.ok) {
-      throw new Error(json?.error || "API error");
+  // Upload
+  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErr(null);
+    setLoading(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      // WICHTIG: Agent-Route verwenden (falls du beides behalten willst: auf /api/agent-avv zeigen)
+      const res = await fetch("/api/agent-avv", { method: "POST", body });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "API error");
+      setRaw(json);
+      setData(normalize(json));
+    } catch (e: any) {
+      setErr(e.message);
+      setRaw(null);
+      setData(null);
+    } finally {
+      setLoading(false);
+      e.target.value = "";
+      setInputKey((k) => k + 1);
     }
+  };
 
-    // Der Agent liefert das Schema { contract_metadata, findings, risk_score, actions }
-    // Dein UI kann bereits beide Varianten lesen. Wir setzen die Antwort 1:1.
-    setData(json);
-  } catch (e: any) {
-    setErr(e.message);
-    setData(null);
-  } finally {
-    setLoading(false);
-    e.target.value = "";
-    setInputKey((k) => k + 1);
-  }
-};
+  const renderEvidence = (ev?: Evidence[]) => (ev || []).map((e) => `S.${e.page ?? "?"}: „${(e.quote || "").slice(0, 140)}…“`).join(" • ");
 
-  const renderEvidence = (ev?: Evidence[]) =>
-    (ev || []).map((e) => `S.${e.page}: „${(e.quote || "").slice(0, 140)}…“`).join(" • ");
-
-  const badge = (s: string) => {
+  const badge = (s?: string) => {
     if (s === "erfüllt") return <span className="badge" style={{ background: "#14532d" }}>erfüllt</span>;
     if (s === "teilweise") return <span className="badge" style={{ background: "#7c2d12" }}>teilweise</span>;
     if (s === "fehlt") return <span className="badge" style={{ background: "#7f1d1d" }}>fehlt</span>;
@@ -214,7 +268,7 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     return <span className="badge bg-secondary">—</span>;
   };
 
-  const rationale = data?.risk_rationale || data?.risk_score?.rationale || "—";
+  const rationale = data?.riskRationale || "—";
 
   return (
     <div className="container py-4">
@@ -255,10 +309,7 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
                   <div className="mt-1 small muted">No data</div>
                 ) : (
                   <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
-                    <div
-                      className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`}
-                      style={{ width: `${compliance}%` }}
-                    />
+                    <div className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`} style={{ width: `${compliance}%` }} />
                   </div>
                 )}
               </div>
@@ -272,26 +323,24 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
                   <div className="mt-1 small muted">No data</div>
                 ) : (
                   <div className="progress" role="progressbar" aria-valuenow={risk} aria-valuemin={0} aria-valuemax={100}>
-                    <div
-                      className={`progress-bar ${risk <= 20 ? "bg-success" : risk <= 40 ? "bg-warning" : "bg-danger"}`}
-                      style={{ width: `${risk}%` }}
-                    />
+                    <div className={`progress-bar ${risk <= 20 ? "bg-success" : risk <= 40 ? "bg-warning" : "bg-danger"}`} style={{ width: `${risk}%` }} />
                   </div>
                 )}
               </div>
-          {/* Rote Warnzeile bei schlechtem Ergebnis */}
-          {((compliance != null && compliance < 60) || (risk != null && risk > 60)) ? (
-            <div className="w-100 mt-3 text-danger d-flex align-items-center" style={{ gap: 8 }}>
-              <i className="bi bi-exclamation-triangle-fill"></i>
-              <span className="small">Niedrige Vertragstreue / erhöhtes Risiko – Vertrag sollte dringend nachgeschärft werden.</span>
-            </div>
-          ) : null}
+
+              {/* Rote Warnzeile bei schlechtem Ergebnis */}
+              {(compliance != null && compliance < 60) || (risk != null && risk > 60) ? (
+                <div className="w-100 mt-3 text-danger d-flex align-items-center" style={{ gap: 8 }}>
+                  <i className="bi bi-exclamation-triangle-fill"></i>
+                  <span className="small">Niedrige Vertragstreue / erhöhtes Risiko – Vertrag sollte dringend nachgeschärft werden.</span>
+                </div>
+              ) : null}
 
               {/* Vertragsinformationen */}
               <div className="card p-3" style={{ minWidth: 240 }}>
                 <div className="muted">Vertrags­informationen</div>
-                <div className="fw-semibold">{data?.vertrag_metadata?.titel || "—"}</div>
-                <div className="muted small">{data?.vertrag_metadata?.datum || "—"}</div>
+                <div className="fw-semibold">{data?.meta?.titel || "—"}</div>
+                <div className="muted small">{data?.meta?.datum || "—"}</div>
               </div>
             </div>
           </div>
@@ -317,7 +366,7 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
           <div className="card h-100">
             <div className="card-body">
               <h2 className="h6 mb-2">Executive Summary</h2>
-              <p className="mb-0" style={{ color: "var(--text)" }}>{rationale}</p>
+              <p className="mb-0" style={{ color: "var(--text)" }}>{data?.riskRationale || "—"}</p>
             </div>
           </div>
         </div>
@@ -329,8 +378,8 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
           <h2 className="h6">Vertragsinformationen</h2>
           <div className="row">
             <div className="col-md-6">
-              <div><span className="muted">Titel:</span> {data?.vertrag_metadata?.titel || "—"}</div>
-              <div><span className="muted">Datum:</span> {data?.vertrag_metadata?.datum || "—"}</div>
+              <div><span className="muted">Titel:</span> {data?.meta?.titel || "—"}</div>
+              <div><span className="muted">Datum:</span> {data?.meta?.datum || "—"}</div>
             </div>
             <div className="col-md-6">
               <div className="muted">Parteien</div>
@@ -338,8 +387,22 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
                 <div className="muted">—</div>
               ) : (
                 <ul className="mb-0">
-                  {(data?.vertrag_metadata?.parteien || []).map((p: any, i: number) => (
-                    <li key={i} className="text-white">{p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}</li>
+                  {(raw?.vertrag_metadata?.parteien ??
+                    raw?.contract_metadata?.parties?.map((p: any) => ({
+                      rolle:
+                        p.role === "controller"
+                          ? "Verantwortlicher"
+                          : p.role === "processor"
+                          ? "Auftragsverarbeiter"
+                          : p.role ?? "",
+                      name: p.name,
+                      land: p.country,
+                    })) ??
+                    []
+                  ).map((p: any, i: number) => (
+                    <li key={i} className="text-white">
+                      {p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}
+                    </li>
                   ))}
                 </ul>
               )}
@@ -365,15 +428,14 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(ART28_KEYS).map(([k, label]) => {
-                    const canon = CANON_MAP[k] ?? k;
-                    const f: Clause | undefined = data?.prüfung?.art_28?.[canon] ?? data?.findings?.art_28?.[k];
-                    const belege = f?.belege ?? f?.evidence ?? [];
+                  {Object.entries(ART28_LABELS).map(([canon, label]) => {
+                    const f = data?.a28?.[canon] as { status?: string; belege?: Evidence[] } | undefined;
+                    const belege = f?.belege ?? [];
                     return (
-                      <tr key={k}>
+                      <tr key={canon}>
                         <td className="fw-semibold">{label}</td>
-                        <td>{badge(f?.status || "—")}</td>
-                        <td className="text-break">{renderEvidence(belege as any) || "—"}</td>
+                        <td>{badge(f?.status)}</td>
+                        <td className="text-break">{renderEvidence(belege) || "—"}</td>
                       </tr>
                     );
                   })}
@@ -408,13 +470,13 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
                         : k === "haftungsbegrenzung"
                         ? "Haftungsbegrenzung"
                         : "Gerichtsstand/Recht";
-                    const f = data?.prüfung?.zusatzklauseln?.[k] ?? {};
-                    const belege = (f as any)?.belege ?? (f as any)?.evidence ?? [];
+                    const f = data?.extras?.[k] ?? {};
+                    const belege = (f as any).belege ?? [];
                     return (
                       <tr key={k}>
                         <td className="fw-semibold">{label}</td>
-                        <td>{badge((f as any)?.status || "—")}</td>
-                        <td className="text-break">{renderEvidence(belege as any) || "—"}</td>
+                        <td>{badge((f as any).status)}</td>
+                        <td className="text-break">{renderEvidence(belege) || "—"}</td>
                       </tr>
                     );
                   })}
@@ -431,11 +493,11 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
           <h2 className="h6 mb-3">Empfohlene Maßnahmen</h2>
           {!data ? (
             <div className="muted">Noch keine Daten</div>
-          ) : (data?.actions || []).length === 0 ? (
+          ) : (raw?.actions || []).length === 0 ? (
             <div className="muted">—</div>
           ) : (
             <div className="list-group">
-              {(data?.actions || []).map((a: any, i: number) => {
+              {(raw?.actions || []).map((a: any, i: number) => {
                 const sev = a.severity === "high" ? "danger" : a.severity === "medium" ? "warning" : "info";
                 return (
                   <div
@@ -457,18 +519,15 @@ const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       </div>
 
       {/* Raw JSON */}
-      {data && (
+      {raw && (
         <div className="mb-5">
           <div className="form-check">
             <input className="form-check-input" type="checkbox" id="raw" checked={showRaw} onChange={() => setShowRaw(!showRaw)} />
             <label className="form-check-label" htmlFor="raw">Raw JSON anzeigen</label>
           </div>
           {showRaw && (
-            <pre
-              className="mt-3 p-3 rounded"
-              style={{ background: "#0b0e14", border: "1px solid #1d2540", color: "var(--text)", whiteSpace: "pre-wrap" }}
-            >
-              {JSON.stringify(data, null, 2)}
+            <pre className="mt-3 p-3 rounded" style={{ background: "#0b0e14", border: "1px solid #1d2540", color: "var(--text)", whiteSpace: "pre-wrap" }}>
+              {JSON.stringify(raw, null, 2)}
             </pre>
           )}
         </div>

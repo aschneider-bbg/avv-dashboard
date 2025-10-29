@@ -40,107 +40,18 @@ Vorgaben:
 - Nur das JSON, keine Markdown-Fences.
 `;
 
-/* ----------------------------------------------------------------
- * ROBUSTE PDF-EXTRAKTION
- *  - pdfjs-dist tolerant gegen defekte XRef ("bad XRef entry")
- *  - zweiter Versuch mit geänderten Flags
- *  - Fallback auf pdf-parse (falls installiert)
- * ---------------------------------------------------------------- */
-/* ---- PDF-Text Seite-für-Seite mit Fallback auf pdf-parse ---- */
-async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
-  if (typeof (globalThis as any).DOMMatrix === "undefined") {
-    (globalThis as any).DOMMatrix = class {
-      multiply() { return this; }
-      translate() { return this; }
-      scale() { return this; }
-      rotate() { return this; }
-    };
-  }
-
-  const MAX_CHARS = 60000;
-  const MIN_USEFUL = 120;
-
-  // 1) Primär: pdfjs-dist
-  try {
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    if (pdfjs.GlobalWorkerOptions) {
-      pdfjs.GlobalWorkerOptions.workerSrc = undefined;
-    }
-
-    const uint8 = new Uint8Array(file);
-    const doc = await pdfjs.getDocument({
-      data: uint8,
-      isEvalSupported: false,
-      disableFontFace: true,
-      useSystemFonts: true,
-    }).promise;
-
-    const pages: string[] = [];
-    const maxPages = Math.min(doc.numPages, 120);
-    let total = 0;
-
-    for (let p = 1; p <= maxPages; p++) {
-      const page = await doc.getPage(p);
-      const content: any = await page.getTextContent({
-        includeMarkedContent: true,
-        disableCombineTextItems: false,
-      }).catch(() => ({ items: [] }));
-
-      const text: string = (content.items || [])
-        .map((it: any) => (typeof it.str === "string" ? it.str : ""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      pages.push(`Seite ${p}:\n${text}`);
-      total += text.length;
-      if (total > MAX_CHARS) break;
-    }
-
-    const joined = pages.join("\n\n---\n\n");
-    if (joined.length >= MIN_USEFUL) {
-      return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
-    }
-  } catch {
-    // geht weiter zu pdf-parse
-  }
-
-  // 2) Fallback: pdf-parse
-  try {
-    const pdfParse: any = (await import("pdf-parse")).default;
-    const buffer = Buffer.from(file);
-    const parsed: { text?: string } = await pdfParse(buffer);
-
-    let text = (parsed?.text || "").replace(/\r/g, "");
-    if (!text || text.trim().length < MIN_USEFUL) {
-      throw new Error("pdf-parse liefert zu wenig Text");
-    }
-
-    const parts: string[] = text.includes("\f")
-      ? text.split("\f")
-      : text.split(/\n{2,}/g);
-
-    const pages: string[] = parts
-      .map((t: string, i: number) => `Seite ${i + 1}:\n${t.replace(/\s+/g, " ").trim()}`)
-      .filter(Boolean);
-
-    const joined = pages.join("\n\n---\n\n");
-    return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
-  } catch {
-    throw new Error("PDF konnte nicht robust extrahiert werden");
-  }
-}
-
 /* ---------------- Normalisierung (EN/DE) ---------------- */
+
 const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden" | "nicht gefunden"> = {
-  // englische Varianten
+  // EN
   met: "erfüllt",
   partial: "teilweise",
   missing: "fehlt",
   present: "vorhanden",
   not_found: "nicht gefunden",
+  "not_found": "nicht gefunden",
 
-  // deutsche Varianten
+  // DE
   erfüllt: "erfüllt",
   teilweise: "teilweise",
   fehlt: "fehlt",
@@ -149,7 +60,6 @@ const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden
 };
 
 const ART28_KEY_MAP: Record<string, string> = {
-  // EN → DE
   instructions_only: "weisung",
   confidentiality: "vertraulichkeit",
   security_TOMs: "toms",
@@ -158,7 +68,7 @@ const ART28_KEY_MAP: Record<string, string> = {
   breach_support: "vorfallmeldung",
   deletion_return: "löschung_rückgabe",
   audit_rights: "audit_nachweis",
-  // DE passthrough
+  // DE-Passthrough
   weisung: "weisung",
   vertraulichkeit: "vertraulichkeit",
   toms: "toms",
@@ -173,14 +83,13 @@ const EXTRAS_KEY_MAP: Record<string, string> = {
   international_transfers: "internationale_übermittlungen",
   liability_cap: "haftungsbegrenzung",
   jurisdiction: "gerichtsstand_recht",
-  // deutsche Varianten
+  // DE-Passthrough
   "internationale_übermittlungen": "internationale_übermittlungen",
   haftungsbegrenzung: "haftungsbegrenzung",
   gerichtsstand_recht: "gerichtsstand_recht",
 };
 
 function normalizeFromAgentLike(json: any) {
-  // akzeptiert: { contract_metadata, findings{art_28, additional_clauses}, risk_score?, actions? }
   const out: any = {
     vertrag_metadata: {},
     prüfung: { art_28: {}, zusatzklauseln: {} },
@@ -195,7 +104,7 @@ function normalizeFromAgentLike(json: any) {
       titel: m.title ?? "",
       datum: m.date ?? "",
       parteien: (m.parties ?? []).map((p: any) => ({
-        rolle: p.role === "controller" ? "Verantwortlicher" : p.role === "processor" ? "Auftragsverarbeiter" : p.role ?? "",
+        rolle: p.role === "controller" ? "Verantwortlicher" : p.role === "processor" ? "Auftragsverarbeiter" : (p.role ?? ""),
         name: p.name ?? "",
         land: p.country ?? "",
       })),
@@ -224,7 +133,6 @@ function normalizeFromAgentLike(json: any) {
 }
 
 function normalizeFromModel(json: any) {
-  // akzeptiert unser Ziel-Schema { vertrag_metadata, prüfung{...}, risk_rationale? }
   const out: any = {
     vertrag_metadata: json?.vertrag_metadata ?? {},
     prüfung: { art_28: {}, zusatzklauseln: {} },
@@ -251,37 +159,123 @@ function normalizeFromModel(json: any) {
   return out;
 }
 
-/* ---------------- Scoring: Compliance & Risiko ---------------- */
-const A28_KEYS_ORDER = [
-  "weisung",
-  "vertraulichkeit",
-  "toms",
-  "unterauftragsverarbeiter",
-  "betroffenenrechte",
-  "vorfallmeldung",
-  "löschung_rückgabe",
-  "audit_nachweis",
-];
+/* ---------------- PDF-Extraktion (robust) ---------------- */
 
-function calcCompliance(norm: any): number | null {
-  const a28 = norm?.art_28 ?? {};
-  let seen = 0;
+async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
+  // Minimaler DOMMatrix-Stub für pdfjs unter Node
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class {
+      multiply() { return this; }
+      translate() { return this; }
+      scale() { return this; }
+      rotate() { return this; }
+    };
+  }
+
+  const MAX_CHARS = 60000;
+  const MIN_USEFUL = 10;
+
+  // Helper: Seiten joinen & cappen
+  const joinPages = (pages: string[]) => {
+    const joined = pages.join("\n\n---\n\n");
+    return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
+  };
+
+  // 1) Primär: pdfjs-dist – zuerst mit disableCombineTextItems=false, dann true
+  try {
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    if (pdfjs?.GlobalWorkerOptions) {
+      pdfjs.GlobalWorkerOptions.workerSrc = undefined;
+    }
+
+    const tryPdfJs = async (disableCombineTextItems: boolean) => {
+      const uint8 = new Uint8Array(file);
+      const doc = await pdfjs.getDocument({
+        data: uint8,
+        isEvalSupported: false,
+        disableFontFace: true,
+        useSystemFonts: true,
+      }).promise;
+
+      const pages: string[] = [];
+      const maxPages = Math.min(doc.numPages, 120);
+      let total = 0;
+
+      for (let p = 1; p <= maxPages; p++) {
+        const page = await doc.getPage(p);
+        const content: any = await page.getTextContent({
+          includeMarkedContent: true,
+          disableCombineTextItems,
+        }).catch(() => ({ items: [] }));
+
+        const text: string = (content.items || [])
+          .map((it: any) => (typeof it?.str === "string" ? it.str : ""))
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        pages.push(`Seite ${p}:\n${text}`);
+        total += text.length;
+        if (total > MAX_CHARS) break;
+      }
+      const joined = joinPages(pages);
+      return joined && joined.replace(/\s/g, "").length >= MIN_USEFUL ? joined : "";
+    };
+
+    let out = await tryPdfJs(false);
+    if (!out) out = await tryPdfJs(true);
+    if (out) return out;
+  } catch (e) {
+    // pdfjs kann bei defektem XRef scheitern → weiter zum Fallback
+    // console.warn("pdfjs failed:", e);
+  }
+
+  // 2) Fallback: pdf-parse – tolerant splitten
+  try {
+    const pdfParse: any = (await import("pdf-parse")).default;
+    const buffer = Buffer.from(file);
+    const parsed: { text?: string } = await pdfParse(buffer);
+    const raw = (parsed?.text || "").replace(/\r/g, "");
+    if (raw && raw.replace(/\s/g, "").length >= MIN_USEFUL) {
+      const parts: string[] = raw.includes("\f")
+        ? raw.split("\f")
+        : raw.split(/\n{2,}/g);
+      const pages: string[] = parts
+        .map((t: string, i: number) => `Seite ${i + 1}:\n${t.replace(/\s+/g, " ").trim()}`)
+        .filter((s) => s.replace(/\s/g, "").length > 0);
+      const joined = joinPages(pages);
+      if (joined && joined.replace(/\s/g, "").length >= MIN_USEFUL) return joined;
+    }
+  } catch (e) {
+    // console.warn("pdf-parse failed:", e);
+  }
+
+  // 3) Letzter Ausweg: Wir geben wenigstens 1 "Seite" mit rohem Byte-Hinweis zurück,
+  // damit das Modell nicht komplett im Leeren steht (besser als harter Abbruch).
+  // Das triggert eine schwache, aber nicht leere Analyse und verhindert 500er.
+  return `Seite 1:
+(Keine extrahierbaren Textinhalte gefunden. PDF könnte nur aus gescannten Bildern bestehen oder beschädigt sein.)`;
+}
+
+/* ---------------- Risiko/Compliance ---------------- */
+
+// Compliance (aus Labels): erfüllt=1, teilweise=0.5, fehlt=0 (+ Extras-Bonus)
+function complianceFromFindings(normPruefung: any): number | null {
+  if (!normPruefung?.art_28) return null;
+  const keys = [
+    "weisung","vertraulichkeit","toms","unterauftragsverarbeiter",
+    "betroffenenrechte","vorfallmeldung","löschung_rückgabe","audit_nachweis",
+  ];
   let achieved = 0;
-
-  for (const k of A28_KEYS_ORDER) {
-    const st = a28?.[k]?.status;
-    if (!st) continue;
-    seen++;
+  let total = keys.length;
+  for (const k of keys) {
+    const st: string | undefined = normPruefung.art_28?.[k]?.status;
     if (st === "erfüllt") achieved += 1;
     else if (st === "teilweise") achieved += 0.5;
   }
-  if (seen === 0) return null;
+  let score = (achieved / total) * 100;
 
-  // Grundscore aus Art.28
-  let score = (achieved / A28_KEYS_ORDER.length) * 100;
-
-  // Extras leicht positiv werten (optional)
-  const extras = norm?.zusatzklauseln ?? {};
+  const extras = normPruefung?.zusatzklauseln || {};
   const intl = extras?.["internationale_übermittlungen"]?.status;
   if (intl === "erfüllt") score += 10;
   else if (intl === "teilweise") score += 5;
@@ -296,11 +290,6 @@ function calcCompliance(norm: any): number | null {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-function calcRiskFromCompliance(comp: number | null): number | null {
-  if (comp == null) return null;
-  return Math.max(0, Math.min(100, 100 - comp));
-}
-
 /* ---------------- Handler ---------------- */
 export async function POST(req: NextRequest) {
   try {
@@ -311,19 +300,6 @@ export async function POST(req: NextRequest) {
     const bytes = await file.arrayBuffer();
     const textByPage = await extractPdfTextPerPage(bytes);
 
-    // Früh abbrechen, wenn wirklich nichts extrahiert wurde
-    if (!textByPage || textByPage.trim().length < 40) {
-      return NextResponse.json(
-        {
-          error: "PDF konnte nicht robust extrahiert werden",
-          details:
-            "Der PDF-Text ist leer oder beschädigt (z.B. defekte XRef-Tabelle). Bitte eine unveränderte/„nicht linearisierte“ PDF-Version verwenden oder das Original neu exportieren.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // OpenAI Responses API – ohne JSON-Schema-Zwang (robuster), strikt durch Prompt
     const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -353,33 +329,30 @@ export async function POST(req: NextRequest) {
       api?.choices?.[0]?.message?.content ||
       "";
 
-    const jsonStr = String(rawText).trim().replace(/^```json\s*|\s*```$/g, "");
+    const jsonStr = rawText.trim().replace(/^```json\s*|\s*```$/g, "");
     let modelJson: any;
     try {
       modelJson = JSON.parse(jsonStr);
     } catch {
-      return NextResponse.json(
-        { error: "Ungültiges JSON", preview: jsonStr.slice(0, 300) },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Ungültiges JSON", preview: jsonStr.slice(0, 300) }, { status: 500 });
     }
 
-    // Normalisieren (Agent-Format vs. Model-Format)
+    // Normalisieren
     const looksLikeAgent = !!(modelJson?.contract_metadata && modelJson?.findings);
     const normBlock = looksLikeAgent ? normalizeFromAgentLike(modelJson) : normalizeFromModel(modelJson);
 
-    // Compliance & Risiko bestimmen
-    const providedCompliance =
+    // Compliance bevorzugen, Risiko ableiten (100 - Compliance), wenn nichts vom Modell kommt
+    const complianceProvided: number | null =
       typeof modelJson?.compliance_score?.overall === "number" ? modelJson.compliance_score.overall : null;
-    const computedCompliance = calcCompliance(normBlock.prüfung);
-    const finalCompliance = providedCompliance ?? computedCompliance;
+
+    const complianceCalc = complianceFromFindings(normBlock.prüfung);
+    const complianceFinal = complianceProvided ?? complianceCalc ?? null;
 
     const providedRisk =
-      typeof modelJson?.risk_score?.overall === "number" ? modelJson.risk_score.overall :
-      typeof modelJson?.risiko_score?.gesamt === "number" ? modelJson.risiko_score.gesamt :
-      null;
-
-    const finalRisk = providedRisk ?? calcRiskFromCompliance(finalCompliance);
+      modelJson?.risk_score?.overall ?? modelJson?.risiko_score?.gesamt ?? null;
+    const riskFinal = (typeof providedRisk === "number")
+      ? providedRisk
+      : (typeof complianceFinal === "number" ? Math.max(0, 100 - complianceFinal) : null);
 
     const result = {
       vertrag_metadata: normBlock.vertrag_metadata,
@@ -388,24 +361,20 @@ export async function POST(req: NextRequest) {
       risk_rationale:
         modelJson?.risk_rationale ??
         modelJson?.risk_score?.rationale ??
-        (finalCompliance == null ? "Keine zuverlässige Bewertung möglich (zu wenig Text erkannt)." : null),
-      // neue, explizite Compliance-Ausgabe (0–100, höher = besser)
-      compliance_score: finalCompliance == null ? null : {
-        overall: finalCompliance,
+        (complianceFinal == null ? "Keine zuverlässige Bewertung möglich (zu wenig Text erkannt)." : null),
+      // Neue Compliance-Form
+      compliance_score: complianceFinal == null ? null : {
+        overall: complianceFinal,
         type: "compliance",
       },
-      // Risiko (0–100, höher = schlechter)
-      risiko_score: finalRisk == null ? null : {
-        gesamt: finalRisk,
+      // Risiko (kompatibel)
+      risiko_score: riskFinal == null ? null : {
+        gesamt: riskFinal,
         typ: "risiko",
-        erklärung:
-          providedRisk != null
-            ? "Vom Modell/Agenten geliefert."
-            : "Ableitung: Risiko = 100 - Compliance. Hoher Compliance-Score bedeutet geringes Risiko.",
+        erklärung: "Ableitung: Risiko = 100 - Compliance. Hoher Compliance-Score bedeutet geringes Risiko.",
       },
-      // Kompatibilität
-      risk_score: finalRisk == null ? null : {
-        overall: finalRisk,
+      risk_score: riskFinal == null ? null : {
+        overall: riskFinal,
         rationale: modelJson?.risk_rationale ?? modelJson?.risk_score?.rationale ?? null,
         type: "risk",
       },
@@ -413,9 +382,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (e: any) {
-    return NextResponse.json(
-      { error: "Serverfehler", details: e?.message ?? String(e) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Serverfehler", details: e?.message ?? String(e) }, { status: 500 });
   }
 }

@@ -48,7 +48,6 @@ Vorgaben:
  * ---------------------------------------------------------------- */
 /* ---- PDF-Text Seite-für-Seite mit Fallback auf pdf-parse ---- */
 async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
-  // Manche Bundles/Umgebungen haben keine DOMMatrix: minimaler Stub
   if (typeof (globalThis as any).DOMMatrix === "undefined") {
     (globalThis as any).DOMMatrix = class {
       multiply() { return this; }
@@ -59,12 +58,11 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
   }
 
   const MAX_CHARS = 60000;
-  const MIN_USEFUL = 120; // darunter gilt als „leer/ungenügend“
+  const MIN_USEFUL = 120;
 
-  // 1) Primär: pdfjs-dist (seitenweise, ideal für unsere Prompts)
+  // 1) Primär: pdfjs-dist
   try {
     const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    // Fake-Worker im Node-Umfeld (Vercel): kein externer Worker
     if (pdfjs.GlobalWorkerOptions) {
       pdfjs.GlobalWorkerOptions.workerSrc = undefined;
     }
@@ -83,12 +81,12 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
 
     for (let p = 1; p <= maxPages; p++) {
       const page = await doc.getPage(p);
-      const content = await page.getTextContent({
+      const content: any = await page.getTextContent({
         includeMarkedContent: true,
         disableCombineTextItems: false,
       }).catch(() => ({ items: [] }));
 
-      const text = (content.items || [])
+      const text: string = (content.items || [])
         .map((it: any) => (typeof it.str === "string" ? it.str : ""))
         .join(" ")
         .replace(/\s+/g, " ")
@@ -103,39 +101,33 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
     if (joined.length >= MIN_USEFUL) {
       return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
     }
-    // sonst Fallback versuchen
   } catch {
-    // Ignorieren – wir versuchen gleich pdf-parse
+    // geht weiter zu pdf-parse
   }
 
-  // 2) Fallback: pdf-parse (robust bei „bad XRef“/linearisierten PDFs)
+  // 2) Fallback: pdf-parse
   try {
     const pdfParse: any = (await import("pdf-parse")).default;
     const buffer = Buffer.from(file);
-    const parsed = await pdfParse(buffer);
+    const parsed: { text?: string } = await pdfParse(buffer);
 
     let text = (parsed?.text || "").replace(/\r/g, "");
     if (!text || text.trim().length < MIN_USEFUL) {
       throw new Error("pdf-parse liefert zu wenig Text");
     }
 
-    // Seiten heuristisch schneiden (Formfeed oder große Lücken)
-    const parts =
-      text.includes("\f")
-        ? text.split("\f")
-        : text.split(/\n{2,}/g);
+    const parts: string[] = text.includes("\f")
+      ? text.split("\f")
+      : text.split(/\n{2,}/g);
 
-    const pages = parts
-      .map((t, i) => `Seite ${i + 1}:\n${t.replace(/\s+/g, " ").trim()}`)
+    const pages: string[] = parts
+      .map((t: string, i: number) => `Seite ${i + 1}:\n${t.replace(/\s+/g, " ").trim()}`)
       .filter(Boolean);
 
     const joined = pages.join("\n\n---\n\n");
     return joined.length > MAX_CHARS ? joined.slice(0, MAX_CHARS) : joined;
   } catch {
-    // 3) Letzte Eskalation: klarer Fehlerhinweis
-    throw new Error(
-      "PDF konnte nicht robust extrahiert werden"
-    );
+    throw new Error("PDF konnte nicht robust extrahiert werden");
   }
 }
 

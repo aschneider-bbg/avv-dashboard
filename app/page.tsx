@@ -92,10 +92,48 @@ export default function Page() {
 
   const risk = riskFromServer ?? (compliance != null ? Math.max(0, 100 - compliance) : null);
 
+  // Neue, strengere Schwellen für klare Ampellogik
   const compColor =
-    compliance == null ? "text-secondary" : compliance >= 80 ? "text-success" : compliance >= 50 ? "text-warning" : "text-danger";
+    compliance == null
+      ? "text-secondary"
+      : compliance >= 85
+      ? "text-success"
+      : compliance >= 70
+      ? "text-warning"
+      : "text-danger";
+
+  // Risiko: strenger, damit mittelmäßige Scores sichtbar kritisch wirken
   const riskColor =
-    risk == null ? "text-secondary" : risk <= 40 ? "text-success" : risk <= 70 ? "text-warning" : "text-danger";
+    risk == null
+      ? "text-secondary"
+      : risk <= 20
+      ? "text-success"
+      : risk <= 40
+      ? "text-warning"
+      : "text-danger";
+
+  // Text-Labels unterhalb der KPIs
+  const compLabel =
+    compliance == null
+      ? "—"
+      : compliance >= 85
+      ? "Hervorragend"
+      : compliance >= 70
+      ? "Solide"
+      : compliance >= 50
+      ? "Kritisch"
+      : "Schlecht";
+
+  const riskLabel =
+    risk == null
+      ? "—"
+      : risk <= 15
+      ? "Sehr gering"
+      : risk <= 30
+      ? "Begrenzt"
+      : risk <= 60
+      ? "Erhöht"
+      : "Hoch";
 
   // ---- Doughnut-Chart ----
   const donut = useMemo(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
@@ -204,12 +242,13 @@ export default function Page() {
               <div className="card p-3" style={{ minWidth: 200 }}>
                 <div className="muted">Compliance</div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
+                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>{compLabel}</div>
                 {compliance == null ? (
                   <div className="mt-1 small muted">No data</div>
                 ) : (
                   <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
                     <div
-                      className={`progress-bar ${compliance >= 80 ? "bg-success" : compliance >= 50 ? "bg-warning" : "bg-danger"}`}
+                      className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`}
                       style={{ width: `${compliance}%` }}
                     />
                   </div>
@@ -220,17 +259,25 @@ export default function Page() {
               <div className="card p-3" style={{ minWidth: 200 }}>
                 <div className="muted">Risiko</div>
                 <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
+                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>{riskLabel}</div>
                 {risk == null ? (
                   <div className="mt-1 small muted">No data</div>
                 ) : (
                   <div className="progress" role="progressbar" aria-valuenow={risk} aria-valuemin={0} aria-valuemax={100}>
                     <div
-                      className={`progress-bar ${risk <= 40 ? "bg-success" : risk <= 70 ? "bg-warning" : "bg-danger"}`}
+                      className={`progress-bar ${risk <= 20 ? "bg-success" : risk <= 40 ? "bg-warning" : "bg-danger"}`}
                       style={{ width: `${risk}%` }}
                     />
                   </div>
                 )}
               </div>
+          {/* Rote Warnzeile bei schlechtem Ergebnis */}
+          {(compliance != null && compliance &lt; 60) || (risk != null && risk &gt; 60) ? (
+            <div className="w-100 mt-3 text-danger d-flex align-items-center" style={{ gap: 8 }}>
+              <i className="bi bi-exclamation-triangle-fill"></i>
+              <span className="small">Niedrige Vertragstreue / erhöhtes Risiko – Vertrag sollte dringend nachgeschärft werden.</span>
+            </div>
+          ) : null}
 
               {/* Vertragsinformationen */}
               <div className="card p-3" style={{ minWidth: 240 }}>

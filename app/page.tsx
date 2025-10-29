@@ -35,8 +35,11 @@ export default function Page() {
   const chartRef = useRef<HTMLCanvasElement | null>(null);
   const chartInst = useRef<any>(null);
 
+  const disabledByExtraction = Boolean(data?.extraction_failed);
+
   // --- Statuszählung (Deutsch)
   const kpis = useMemo(() => {
+    if (!data || disabledByExtraction) return { erfüllt: 0, teilweise: 0, fehlt: 0, total: Object.keys(ART28_KEYS).length, any: false };
     const a28 = data?.prüfung?.art_28 || {};
     const statuses = Object.values(a28).map((x: any) => x?.status || "");
     const erfüllt = statuses.filter((s) => s === "erfüllt").length;
@@ -44,17 +47,16 @@ export default function Page() {
     const fehlt = statuses.filter((s) => s === "fehlt").length;
     const total = Object.keys(ART28_KEYS).length;
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
-  }, [data]);
+  }, [data, disabledByExtraction]);
 
-  // Risiko nur zeigen, wenn es Daten gibt
-  const risikoServer = data?.risiko_score?.gesamt ?? data?.risk_score?.overall ?? null;
+  // Risiko nur zeigen, wenn es Daten gibt und keine Extraktionsprobleme
+  const risikoServer = disabledByExtraction ? null : (data?.risiko_score?.gesamt ?? data?.risk_score?.overall ?? null);
   const risikoClient = useMemo(() => {
-    if (!kpis.any) return null;
-    // kleine Spiegelung der Serverlogik (nur Anzeige-Fallback)
+    if (!kpis.any || disabledByExtraction) return null;
     const start = 100;
     const val = start + kpis.teilweise * -10 + kpis.fehlt * -25;
     return Math.max(0, Math.min(100, Math.round(val)));
-  }, [kpis]);
+  }, [kpis, disabledByExtraction]);
 
   const risk = risikoServer ?? risikoClient;
   const riskBar = risk == null ? 0 : risk;
@@ -67,7 +69,7 @@ export default function Page() {
     const Chart = (window as any).Chart as any;
     if (!Chart || !chartRef.current) return;
 
-    if (!data || !kpis.any) {
+    if (!data || !kpis.any || disabledByExtraction) {
       if (chartInst.current) { chartInst.current.destroy(); chartInst.current = null; }
       return;
     }
@@ -95,7 +97,7 @@ export default function Page() {
         cutout: "65%",
       },
     });
-  }, [donut, data, kpis.any]);
+  }, [donut, data, kpis.any, disabledByExtraction]);
 
   // Upload
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -159,6 +161,14 @@ export default function Page() {
                 </div>
               )}
               {err && <div className="mt-2 text-danger"><i className="bi bi-exclamation-triangle me-2" />{err}</div>}
+
+              {/* WARNBANNER BEI EXTRAKTIONSFEHLER */}
+              {data?.extraction_failed && (
+                <div className="alert alert-warning mt-3" role="alert">
+                  <i className="bi bi-info-circle me-2" />
+                  {data?.message || "Die Datei konnte nicht zuverlässig gelesen werden (möglicherweise gescannt oder verschlüsselt). Bitte eine durchsuchbare PDF hochladen."}
+                </div>
+              )}
             </div>
 
             <div className="d-flex flex-wrap gap-3">
@@ -180,9 +190,15 @@ export default function Page() {
               <div className="card p-3" style={{ minWidth: 220 }}>
                 <div className="muted">Art. 28 Status</div>
                 <div className="d-flex align-items-center gap-2">
-                  <span className="badge" style={{ background: "#14532d" }}>erfüllt {kpis.erfüllt}</span>
-                  <span className="badge" style={{ background: "#7c2d12" }}>teilweise {kpis.teilweise}</span>
-                  <span className="badge" style={{ background: "#7f1d1d" }}>fehlt {kpis.fehlt}</span>
+                  {disabledByExtraction ? (
+                    <span className="muted">Keine Daten</span>
+                  ) : (
+                    <>
+                      <span className="badge" style={{ background: "#14532d" }}>erfüllt {kpis.erfüllt}</span>
+                      <span className="badge" style={{ background: "#7c2d12" }}>teilweise {kpis.teilweise}</span>
+                      <span className="badge" style={{ background: "#7f1d1d" }}>fehlt {kpis.fehlt}</span>
+                    </>
+                  )}
                 </div>
                 <small className="muted">von {kpis.total} Kategorien</small>
               </div>
@@ -203,7 +219,9 @@ export default function Page() {
           <div className="card h-100">
             <div className="card-body">
               <h2 className="h6 mb-3">Statusverteilung (Art. 28)</h2>
-              {data && kpis.any ? <canvas ref={chartRef} height={220} /> : <div className="muted">Noch keine Daten</div>}
+              {data && kpis.any && !disabledByExtraction
+                ? <canvas ref={chartRef} height={220} />
+                : <div className="muted">Noch keine Daten</div>}
               <div className="mt-2 small muted">
                 <span style={{ color: "#16a34a" }}>■</span> erfüllt&nbsp;&nbsp;
                 <span style={{ color: "#f59e0b" }}>■</span> teilweise&nbsp;&nbsp;
@@ -217,7 +235,7 @@ export default function Page() {
             <div className="card-body">
               <h2 className="h6 mb-2">Executive Summary</h2>
               <p className="mb-0" style={{ color: "var(--text)" }}>
-                {data?.risk_rationale || data?.risk_score?.rationale || "—"}
+                {disabledByExtraction ? "—" : (data?.risk_rationale || data?.risk_score?.rationale || "—")}
               </p>
             </div>
           </div>
@@ -310,11 +328,11 @@ export default function Page() {
                         ? "Haftungsbegrenzung"
                         : "Gerichtsstand/Recht";
                     const f = data?.prüfung?.zusatzklauseln?.[k] ?? {};
-                    const belege = f?.belege ?? f?.evidence ?? [];
+                    const belege = (f as any)?.belege ?? (f as any)?.evidence ?? [];
                     return (
                       <tr key={k}>
                         <td className="fw-semibold">{label}</td>
-                        <td>{badge(f?.status || "—")}</td>
+                        <td>{badge((f as any)?.status || "—")}</td>
                         <td className="text-break">{renderEvidence(belege as any) || "—"}</td>
                       </tr>
                     );
@@ -330,7 +348,7 @@ export default function Page() {
       <div className="card mb-4">
         <div className="card-body">
           <h2 className="h6 mb-3">Empfohlene Maßnahmen</h2>
-        {!data ? (
+          {!data ? (
             <div className="muted">Noch keine Daten</div>
           ) : (data?.actions || []).length === 0 ? (
             <div className="muted">—</div>
@@ -366,7 +384,7 @@ export default function Page() {
             <label className="form-check-label" htmlFor="raw">Raw JSON anzeigen</label>
           </div>
           {showRaw && (
-            <pre className="mt-3 p-3 rounded" style={{ background: "#0b0e14", border: "1px solid #1d2540", color: "var(--text)", whiteSpace: "pre-wrap" }}>
+            <pre className="mt-3 p-3 rounded" style={{ background: "#0b0e14", border: "1px solid "#1d2540", color: "var(--text)", whiteSpace: "pre-wrap" }}>
               {JSON.stringify(data, null, 2)}
             </pre>
           )}

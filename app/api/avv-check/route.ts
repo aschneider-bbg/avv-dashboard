@@ -40,7 +40,7 @@ Vorgaben:
 - Nur das JSON, keine Markdown-Fences.
 `;
 
-/* ---- PDF-Text pro Seite (pdfjs-dist v5, Node/Vercel-kompatibel, ohne Worker) ---- */
+/* ---- PDF-Text pro Seite (pdfjs-dist v5, Node/Vercel, ohne Worker) ---- */
 async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
   // Minimaler DOMMatrix-Stub – nur falls pdfjs danach fragt (Node hat das nicht)
   if (typeof (globalThis as any).DOMMatrix === "undefined") {
@@ -52,37 +52,25 @@ async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
     };
   }
 
-  try {
-    // WICHTIG: v5 → legacy/build/pdf.mjs
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // v5 → legacy/build/pdf.mjs (kein worker importieren)
+  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
-    const uint8 = new Uint8Array(file);
-    const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
+  const uint8 = new Uint8Array(file);
+  const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
 
-    const pages: string[] = [];
-    const maxPages = Math.min(doc.numPages, 80);
-    for (let p = 1; p <= maxPages; p++) {
-      const page = await doc.getPage(p);
-      const content = await page.getTextContent();
-      const text = content.items.map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
-      pages.push(`Seite ${p}:\n${text}`);
-    }
-    const joined = pages.join("\n\n---\n\n");
-    return joined.length > 60000 ? joined.slice(0, 60000) : joined;
-  } catch {
-    // Optionaler Fallback: pdf-parse (falls du das installiert hast)
-    try {
-      const pdfParse = (await import("pdf-parse")).default as any;
-      const buf = Buffer.from(file);
-      const r = await pdfParse(buf);
-      const text = (r.text || "").replace(/\s+\n/g, "\n").trim();
-      return `Seite 1:\n${text}`;
-    } catch {
-      return "Seite 1:\n[PDF konnte serverseitig nicht extrahiert werden]";
-    }
+  let chars = 0;
+  const pages: string[] = [];
+  const maxPages = Math.min(doc.numPages, 80);
+  for (let p = 1; p <= maxPages; p++) {
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent().catch(() => ({ items: [] }));
+    const text = (content.items || []).map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
+    chars += text.length;
+    pages.push(`Seite ${p}:\n${text}`);
   }
+  const joined = pages.join("\n\n---\n\n");
+  return joined.length > 60000 ? joined.slice(0, 60000) : joined;
 }
-
 
 /* ---------------- Normalisierung (EN/DE) ---------------- */
 const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden" | "nicht gefunden"> = {
@@ -90,7 +78,9 @@ const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden
   partial: "teilweise",
   missing: "fehlt",
   present: "vorhanden",
+  not_found: "nicht gefunden",
   "not_found": "nicht gefunden",
+
   erfüllt: "erfüllt",
   teilweise: "teilweise",
   fehlt: "fehlt",
@@ -107,7 +97,7 @@ const ART28_KEY_MAP: Record<string, string> = {
   breach_support: "vorfallmeldung",
   deletion_return: "löschung_rückgabe",
   audit_rights: "audit_nachweis",
-  // deutsche Varianten direkt durchreichen
+
   weisung: "weisung",
   vertraulichkeit: "vertraulichkeit",
   toms: "toms",
@@ -122,7 +112,7 @@ const EXTRAS_KEY_MAP: Record<string, string> = {
   international_transfers: "internationale_übermittlungen",
   liability_cap: "haftungsbegrenzung",
   jurisdiction: "gerichtsstand_recht",
-  // deutsche Varianten
+
   "internationale_übermittlungen": "internationale_übermittlungen",
   haftungsbegrenzung: "haftungsbegrenzung",
   gerichtsstand_recht: "gerichtsstand_recht",
@@ -144,7 +134,9 @@ function normalizeFromAgentLike(json: any) {
       titel: m.title ?? "",
       datum: m.date ?? "",
       parteien: (m.parties ?? []).map((p: any) => ({
-        rolle: p.role === "controller" ? "Verantwortlicher" : p.role === "processor" ? "Auftragsverarbeiter" : p.role ?? "",
+        rolle: p.role === "controller" ? "Verantwortlicher"
+              : p.role === "processor" ? "Auftragsverarbeiter"
+              : p.role ?? "",
         name: p.name ?? "",
         land: p.country ?? "",
       })),
@@ -215,6 +207,7 @@ function calcRisk(norm: any): number | null {
     seen++;
     if (st === "teilweise") s += WEIGHTS.teilweise;
     else if (st === "fehlt") s += WEIGHTS.fehlt;
+    // "erfüllt" addiert 0 → bewusst weggelassen
   }
   if (seen === 0) return null; // keine Daten → Risiko nicht anzeigen
   return Math.max(0, Math.min(100, Math.round(s)));
@@ -230,6 +223,34 @@ export async function POST(req: NextRequest) {
     const bytes = await file.arrayBuffer();
     const textByPage = await extractPdfTextPerPage(bytes);
 
+    // Fail-safe: Wenn zu wenig Text, kein Model-Call & KEIN Risiko zurückgeben
+    if (!textByPage || textByPage.replace(/\s/g, "").length < 500) {
+      return NextResponse.json({
+        extraction_failed: true,
+        message: "Vertragstext konnte nicht extrahiert werden (evtl. gescannt/abgesichert). Bitte eine durchsuchbare PDF hochladen.",
+        vertrag_metadata: {},
+        prüfung: {
+          art_28: {
+            weisung: { status: "fehlt", belege: [] },
+            vertraulichkeit: { status: "fehlt", belege: [] },
+            toms: { status: "fehlt", belege: [] },
+            unterauftragsverarbeiter: { status: "fehlt", belege: [] },
+            betroffenenrechte: { status: "fehlt", belege: [] },
+            vorfallmeldung: { status: "fehlt", belege: [] },
+            löschung_rückgabe: { status: "fehlt", belege: [] },
+            audit_nachweis: { status: "fehlt", belege: [] },
+          },
+          zusatzklauseln: {
+            internationale_übermittlungen: { status: "nicht gefunden", belege: [] },
+            haftungsbegrenzung: { status: "nicht gefunden", belege: [] },
+            gerichtsstand_recht: { status: "nicht gefunden", belege: [] },
+          },
+        },
+        // WICHTIG: kein risiko_score / risk_score hier
+      });
+    }
+
+    // OpenAI Responses API (ohne seed/modalities/response_format)
     const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -259,7 +280,7 @@ export async function POST(req: NextRequest) {
       api?.choices?.[0]?.message?.content ||
       "";
 
-    const jsonStr = rawText.trim().replace(/^```json\s*|\s*```$/g, "");
+    const jsonStr = String(rawText).trim().replace(/^```json\s*|\s*```$/g, "");
     let modelJson: any;
     try {
       modelJson = JSON.parse(jsonStr);

@@ -39,7 +39,8 @@ export default function Page() {
 
   // --- Statuszählung (Deutsch)
   const kpis = useMemo(() => {
-    if (!data || disabledByExtraction) return { erfüllt: 0, teilweise: 0, fehlt: 0, total: Object.keys(ART28_KEYS).length, any: false };
+    if (!data || disabledByExtraction)
+      return { erfüllt: 0, teilweise: 0, fehlt: 0, total: Object.keys(ART28_KEYS).length, any: false };
     const a28 = data?.prüfung?.art_28 || {};
     const statuses = Object.values(a28).map((x: any) => x?.status || "");
     const erfüllt = statuses.filter((s) => s === "erfüllt").length;
@@ -70,7 +71,10 @@ export default function Page() {
     if (!Chart || !chartRef.current) return;
 
     if (!data || !kpis.any || disabledByExtraction) {
-      if (chartInst.current) { chartInst.current.destroy(); chartInst.current = null; }
+      if (chartInst.current) {
+        chartInst.current.destroy();
+        chartInst.current = null;
+      }
       return;
     }
 
@@ -166,7 +170,8 @@ export default function Page() {
               {data?.extraction_failed && (
                 <div className="alert alert-warning mt-3" role="alert">
                   <i className="bi bi-info-circle me-2" />
-                  {data?.message || "Die Datei konnte nicht zuverlässig gelesen werden (möglicherweise gescannt oder verschlüsselt). Bitte eine durchsuchbare PDF hochladen."}
+                  {data?.message ||
+                    "Die Datei konnte nicht zuverlässig gelesen werden (möglicherweise gescannt oder verschlüsselt). Bitte eine durchsuchbare PDF hochladen."}
                 </div>
               )}
             </div>
@@ -219,9 +224,11 @@ export default function Page() {
           <div className="card h-100">
             <div className="card-body">
               <h2 className="h6 mb-3">Statusverteilung (Art. 28)</h2>
-              {data && kpis.any && !disabledByExtraction
-                ? <canvas ref={chartRef} height={220} />
-                : <div className="muted">Noch keine Daten</div>}
+              {data && kpis.any && !disabledByExtraction ? (
+                <canvas ref={chartRef} height={220} />
+              ) : (
+                <div className="muted">Noch keine Daten</div>
+              )}
               <div className="mt-2 small muted">
                 <span style={{ color: "#16a34a" }}>■</span> erfüllt&nbsp;&nbsp;
                 <span style={{ color: "#f59e0b" }}>■</span> teilweise&nbsp;&nbsp;
@@ -248,8 +255,12 @@ export default function Page() {
           <h2 className="h6">Vertragsinformationen</h2>
           <div className="row">
             <div className="col-md-6">
-              <div><span className="muted">Titel:</span> {data?.vertrag_metadata?.titel || "—"}</div>
-              <div><span className="muted">Datum:</span> {data?.vertrag_metadata?.datum || "—"}</div>
+              <div>
+                <span className="muted">Titel:</span> {data?.vertrag_metadata?.titel || "—"}
+              </div>
+              <div>
+                <span className="muted">Datum:</span> {data?.vertrag_metadata?.datum || "—"}
+              </div>
             </div>
             <div className="col-md-6">
               <div className="muted">Parteien</div>
@@ -258,7 +269,9 @@ export default function Page() {
               ) : (
                 <ul className="mb-0">
                   {(data?.vertrag_metadata?.parteien || []).map((p: any, i: number) => (
-                    <li key={i} className="text-white">{p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}</li>
+                    <li key={i} className="text-white">
+                      {p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}
+                    </li>
                   ))}
                 </ul>
               )}
@@ -271,7 +284,7 @@ export default function Page() {
       <div className="card mb-4">
         <div className="card-body">
           <h2 className="h6 mb-3">Prüfmatrix (Art. 28 Abs. 3)</h2>
-          {!data ? (
+        {!data ? (
             <div className="muted">Noch keine Daten</div>
           ) : (
             <div className="table-responsive">
@@ -286,7 +299,8 @@ export default function Page() {
                 <tbody>
                   {Object.entries(ART28_KEYS).map(([k, label]) => {
                     const canon = CANON_MAP[k] ?? k;
-                    const f: Clause | undefined = data?.prüfung?.art_28?.[canon] ?? data?.findings?.art_28?.[k];
+                    const f: Clause | undefined =
+                      data?.prüfung?.art_28?.[canon] ?? data?.findings?.art_28?.[k];
                     const belege = f?.belege ?? f?.evidence ?? [];
                     return (
                       <tr key={k}>
@@ -355,8 +369,7 @@ export default function Page() {
           ) : (
             <div className="list-group">
               {(data?.actions || []).map((a: any, i: number) => {
-                const sev =
-                  a.severity === "high" ? "danger" : a.severity === "medium" ? "warning" : "info";
+                const sev = a.severity === "high" ? "danger" : a.severity === "medium" ? "warning" : "info";
                 return (
                   <div
                     key={i}
@@ -384,7 +397,15 @@ export default function Page() {
             <label className="form-check-label" htmlFor="raw">Raw JSON anzeigen</label>
           </div>
           {showRaw && (
-            <pre className="mt-3 p-3 rounded" style={{ background: "#0b0e14", border: "1px solid "#1d2540", color: "var(--text)", whiteSpace: "pre-wrap" }}>
+            <pre
+              className="mt-3 p-3 rounded"
+              style={{
+                background: "#0b0e14",
+                border: "1px solid #1d2540",
+                color: "var(--text)",
+                whiteSpace: "pre-wrap",
+              }}
+            >
               {JSON.stringify(data, null, 2)}
             </pre>
           )}

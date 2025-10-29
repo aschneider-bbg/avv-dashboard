@@ -8,32 +8,29 @@ export const dynamic = "force-dynamic";
 /* ------------------------------------------------------------
    PDF-Extraktion (robust mit pdfjs-dist, kein pdf-parse nötig)
 ------------------------------------------------------------- */
+// --- Hilfsfunktion: PDF -> Text (robust, ohne Worker) ---
 async function pdfToText(file: File): Promise<string> {
-  if (typeof (globalThis as any).DOMMatrix === "undefined") {
-    (globalThis as any).DOMMatrix = class {
-      multiply() { return this; }
-      translate() { return this; }
-      scale() { return this; }
-      rotate() { return this; }
-    };
+  const { getDocument } = await import("pdfjs-dist");
+  // Manuell Worker deaktivieren, damit Vercel nicht versucht, .mjs zu laden
+  (globalThis as any).PDFJS = { disableWorker: true };
+
+  const data = new Uint8Array(await file.arrayBuffer());
+  const loadingTask = getDocument({ data });
+  const pdf = await loadingTask.promise;
+  let text = "";
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items.map((it: any) => it.str).join(" ");
+    text += `\n\nSeite ${i}:\n${pageText}`;
   }
 
-  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const uint8 = new Uint8Array(await file.arrayBuffer());
-  const doc = await pdfjs.getDocument({ data: uint8, isEvalSupported: false }).promise;
-
-  const pages: string[] = [];
-  const maxPages = Math.min(doc.numPages, 60);
-  for (let p = 1; p <= maxPages; p++) {
-    const page = await doc.getPage(p);
-    const content = await page.getTextContent().catch(() => ({ items: [] }));
-    const text = (content.items || []).map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
-    pages.push(`Seite ${p}: ${text}`);
+  if (!text.trim()) {
+    throw new Error("PDF-Text leer oder unlesbar");
   }
 
-  const joined = pages.join("\n\n---\n\n").trim();
-  if (!joined) throw new Error("PDF-Text leer oder nicht lesbar");
-  return joined.length > 70000 ? joined.slice(0, 70000) : joined;
+  return text.trim();
 }
 
 /* ------------------------------------------------------------

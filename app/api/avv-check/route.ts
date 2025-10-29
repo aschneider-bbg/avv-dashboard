@@ -3,256 +3,140 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/* ------------------- System Prompt ------------------- */
+/* ---------------- Prompt (Deutsch) ---------------- */
 const SYSTEM_PROMPT = `
-Du bist ein AVV-Analyst. Lies den Vertragstext (Seiten sind mit "Seite N:" markiert) und liefere AUSSCHLIESSLICH valides JSON gemäß vorgegebenem Schema.
-Wichtig:
-- Nutze die bereitgestellten "Hinweise" (Snippets je Kategorie) aktiv, um Belege zu finden.
-- Belege IMMER mit "page" (Seitenzahl, wie "Seite N") und kurzem "quote".
-- Wenn eindeutige Regelung vorhanden: status="met".
-- Wenn nur teilweise/unscharf geregelt (z.B. "angemessene Frist", unvollständig): status="partial".
-- Wenn nichts erkennbar: status="missing".
-- Keine Markdown-Fences, nur JSON.
+Du bist ein AVV-Analyst. Lies den Vertragstext (pro Seite markiert) und gib AUSSCHLIESSLICH valides JSON zurück:
+
+{
+  "vertrag_metadata": {
+    "titel": "...",
+    "datum": "...",
+    "parteien": [ { "rolle": "...", "name": "...", "land": "..." } ]
+  },
+  "prüfung": {
+    "art_28": {
+      "weisung": { "status": "erfüllt|teilweise|fehlt", "belege": [ { "page": 1, "quote": "..." } ] },
+      "vertraulichkeit": { "status": "erfüllt|teilweise|fehlt", "belege": [] },
+      "toms": { "status": "erfüllt|teilweise|fehlt", "belege": [] },
+      "unterauftragsverarbeiter": { "status": "erfüllt|teilweise|fehlt", "belege": [] },
+      "betroffenenrechte": { "status": "erfüllt|teilweise|fehlt", "belege": [] },
+      "vorfallmeldung": { "status": "erfüllt|teilweise|fehlt", "belege": [] },
+      "löschung_rückgabe": { "status": "erfüllt|teilweise|fehlt", "belege": [] },
+      "audit_nachweis": { "status": "erfüllt|teilweise|fehlt", "belege": [] }
+    },
+    "zusatzklauseln": {
+      "internationale_übermittlungen": { "status": "erfüllt|teilweise|fehlt|vorhanden|nicht gefunden", "belege": [] },
+      "haftungsbegrenzung": { "status": "erfüllt|teilweise|fehlt|vorhanden|nicht gefunden", "belege": [] },
+      "gerichtsstand_recht": { "status": "erfüllt|teilweise|fehlt|vorhanden|nicht gefunden", "belege": [] }
+    }
+  },
+  "risk_rationale": "1–3 Sätze Executive Summary auf Deutsch."
+}
+
+Vorgaben:
+- Exakt diese Feldnamen verwenden.
+- Status genau im genannten Vokabular.
+- Belege immer mit "page" (Seite aus dem bereitgestellten Text; Seiten sind als "Seite N:" markiert) und kurzem "quote".
+- Nur das JSON, keine Markdown-Fences.
 `;
 
-/* ---------- Keyword-Lexikon (für Snippets) ---------- */
-const KEYWORDS: Record<string, string[]> = {
-  instructions_only: ["Weisung", "Weisungen", "Instruktion", "Instruction"],
-  confidentiality: ["Vertraulichkeit", "Verschwiegenheit", "Geheimhaltung", "Confidentiality", "Datengeheimnis"],
-  security_TOMs: ["Technisch-organisatorisch", "TOM", "TOMs", "Stand der Technik", "Sicherheitsmaßnahme", "Privacy by Design", "Privacy by Default", "ISO 27001"],
-  subprocessors: ["Unterauftragsverarbeiter", "Subunternehmer", "Subprozessor", "Unterauftragnehmer", "Subprocessor", "Genehmigung Unterauftrag"],
-  data_subject_rights_support: ["Betroffenenrechte", "Auskunft", "Berichtigung", "Löschung", "Einschränkung", "Übertragbarkeit", "Widerspruch", "Art. 15", "Art. 16", "Art. 17", "Art. 18", "Art. 20", "Art. 21"],
-  breach_support: ["Datenschutzverletzung", "Breach", "Meldung", "Meldepflicht", "72 Stunden", "Incident", "Sicherheitsvorfall"],
-  deletion_return: ["Löschung", "Rückgabe", "nach Vertragsende", "Rückübertragung", "Vernichtung", "Deletion", "Return of Data"],
-  audit_rights: ["Audit", "Nachweis", "Kontrolle", "Inspektion", "Prüfung", "Auditrechte", "Nachweispflichten"],
-  international_transfers: ["international", "Drittland", "Übermittlung", "Transfer", "Standardvertragsklauseln", "SCC", "SVK", "UK", "USA", "EU 2021/914", "2021/915"],
-  liability_cap: ["Haftung", "Haftungsbegrenzung", "Haftungsausschluss", "limitiert", "beschränkt", "Liability"],
-  jurisdiction: ["Gerichtsstand", "anwendbares Recht", "Rechtswahl", "Jurisdiction", "Governing Law"],
-};
-
-function statusBlock(statuses: string[] = ["met", "partial", "missing"]) {
-  return {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      status: { type: "string", enum: statuses },
-      evidence: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-                    quote: { type: "string" },
-                    page: { type: "number" },
-          },
-          required: ["quote", "page"],
-        },
-      },
-    },
-    required: ["status", "evidence"],
-  };
-}
-
-// <-- reines JSON-Schema
-const AVV_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    contract_metadata: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        title: { type: "string" },
-        date: { type: "string" },
-        parties: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              role: { type: "string", enum: ["controller", "processor", "other"] },
-              name: { type: "string" },
-              country: { type: "string" },
-            },
-            // ✅ wichtiger Fix: country in required aufnehmen
-            required: ["role", "name", "country"],
-          },
-        },
-      },
-      required: ["title", "date", "parties"],
-    },
-
-    findings: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        art_28: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            instructions_only: statusBlock(),
-            confidentiality: statusBlock(),
-            security_TOMs: statusBlock(),
-            subprocessors: statusBlock(),
-            data_subject_rights_support: statusBlock(),
-            breach_support: statusBlock(),
-            deletion_return: statusBlock(),
-            audit_rights: statusBlock(),
-          },
-          required: [
-            "instructions_only",
-            "confidentiality",
-            "security_TOMs",
-            "subprocessors",
-            "data_subject_rights_support",
-            "breach_support",
-            "deletion_return",
-            "audit_rights",
-          ],
-        },
-        additional_clauses: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            international_transfers: statusBlock(["met", "partial", "missing", "present", "not_found"]),
-            liability_cap: statusBlock(["met", "partial", "missing", "present", "not_found"]),
-            jurisdiction: statusBlock(["met", "partial", "missing", "present", "not_found"]),
-          },
-          required: ["international_transfers", "liability_cap", "jurisdiction"],
-        },
-      },
-      required: ["art_28", "additional_clauses"],
-    },
-
-    risk_score: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        overall: { type: "number" },
-        rationale: { type: "string" },
-      },
-      required: ["overall", "rationale"],
-    },
-
-    actions: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          severity: { type: "string", enum: ["high", "medium", "low"] },
-          issue: { type: "string" },
-          suggested_clause: { type: "string" },
-        },
-        required: ["severity", "issue", "suggested_clause"],
-      },
-    },
-  },
-  required: ["contract_metadata", "findings", "risk_score", "actions"],
-} as const;
-
-// Format-Objekt unverändert lassen:
-const JSON_FORMAT = {
-  type: "json_schema",
-  name: "AVVSchema",
-  strict: true,
-  schema: AVV_JSON_SCHEMA,
-} as const;
-
-/* ---------- PDF-Extraktion (ohne Worker) ---------- */
-async function extractPdf(file: ArrayBuffer): Promise<{ joined: string; pages: string[] }> {
-  const pdfParseMod = await import("pdf-parse");
-  const pdfParse = (pdfParseMod as any).default ?? (pdfParseMod as any);
-
-  const pages: string[] = [];
-  const res = await pdfParse(Buffer.from(file), {
-    pagerender: async (pageData: any) => {
-      const tc = await pageData.getTextContent();
-      const text = (tc.items || [])
-        .map((it: any) => (it.str ?? ""))
-        .join("\n")
-        .replace(/[ \t]+\n/g, "\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
-      pages.push(text);
-      return "";
-    },
-    max: 80,
-  });
-
-  if (pages.length === 0) {
-    const flat = String(res?.text || "").trim();
-    if (!flat) return { joined: "", pages: [] };
-    return { joined: `Seite 1:\n${flat.slice(0, 120000)}`, pages: [flat] };
+/* ----------------------------------------------------------------
+ * ROBUSTE PDF-EXTRAKTION
+ *  - pdfjs-dist tolerant gegen defekte XRef ("bad XRef entry")
+ *  - zweiter Versuch mit geänderten Flags
+ *  - Fallback auf pdf-parse (falls installiert)
+ * ---------------------------------------------------------------- */
+async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
+  // DOMMatrix-Stub für Node (pdfjs erwartet es in einigen Pfaden)
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class {
+      multiply() { return this; }
+      translate() { return this; }
+      scale() { return this; }
+      rotate() { return this; }
+    };
   }
 
-  const joined = pages.map((t, i) => `Seite ${i + 1}:\n${t}`).join("\n\n---\n\n");
-  return { joined: joined.length > 120000 ? joined.slice(0, 120000) : joined, pages };
-}
+  const uint8 = new Uint8Array(file);
 
-/* ---------- Snippets um Treffer (bessere Evidenzfindung) ---------- */
-function buildSnippets(pages: string[], window = 260, maxSnipsPerCat = 6) {
-  const lowerPages = pages.map((p) => p.toLowerCase());
-  const out: Record<string, Array<{ page: number; snippet: string }>> = {};
+  // 1) Versuch: pdfjs-dist (tolerant)
+  try {
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
-  const cats = Object.keys(KEYWORDS) as Array<keyof typeof KEYWORDS>;
-  for (const cat of cats) {
-    out[cat] = [];
-    const kws = KEYWORDS[cat];
-    lowerPages.forEach((txt, idx) => {
-      for (const kw of kws) {
-        const pos = txt.indexOf(kw.toLowerCase());
-        if (pos >= 0) {
-          const raw = pages[idx];
-          const start = Math.max(0, pos - window);
-          const end = Math.min(raw.length, pos + kw.length + window);
-          out[cat].push({ page: idx + 1, snippet: raw.slice(start, end).replace(/\s+/g, " ").trim() });
-          break; // pro Seite nur ein Treffer pro Kategorie
-        }
+    const tryOnce = async (opts: any) => {
+      const task = pdfjs.getDocument({
+        data: uint8,
+        isEvalSupported: false,
+        stopAtErrors: false,    // <— wichtig gegen „bad XRef entry“
+        disableAutoFetch: true, // weniger Range-Fetch, robuster
+        ...opts,
+      });
+      const doc = await task.promise;
+
+      const maxPages = Math.min(doc.numPages, 80);
+      const pages: string[] = [];
+      let chars = 0;
+
+      for (let p = 1; p <= maxPages; p++) {
+        const page = await doc.getPage(p);
+        const content = await page.getTextContent().catch(() => ({ items: [] }));
+        const text = (content.items || [])
+          .map((it: any) => (typeof it.str === "string" ? it.str : ""))
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        chars += text.length;
+        pages.push(`Seite ${p}:\n${text}`);
+
+        if (chars > 60000) break; // harte Kappung
       }
-    });
-    // Deckeln
-    if (out[cat].length > maxSnipsPerCat) out[cat] = out[cat].slice(0, maxSnipsPerCat);
-  }
-  return out;
-}
 
-/* ---------- Hints-Block für den Prompt ---------- */
-function renderHints(snips: Record<string, Array<{ page: number; snippet: string }>>) {
-  const order = [
-    "instructions_only",
-    "confidentiality",
-    "security_TOMs",
-    "subprocessors",
-    "data_subject_rights_support",
-    "breach_support",
-    "deletion_return",
-    "audit_rights",
-    "international_transfers",
-    "liability_cap",
-    "jurisdiction",
-  ] as const;
+      const joined = pages.join("\n\n---\n\n");
+      return joined.length > 60000 ? joined.slice(0, 60000) : joined;
+    };
 
-  const parts: string[] = [];
-  parts.push("Hinweise (Snippets je Kategorie; bitte vorrangig durchsuchen):");
-  for (const key of order) {
-    const arr = snips[key] || [];
-    if (!arr.length) continue;
-    parts.push(`- ${key}:`);
-    for (const s of arr) {
-      parts.push(`  • Seite ${s.page}: ${s.snippet}`);
+    try {
+      return await tryOnce({});
+    } catch {
+      // zweiter Versuch mit alternativen Optionen
+      return await tryOnce({ rangeChunkSize: 1 << 16, useSystemFonts: true });
     }
+  } catch {
+    // falle zum Fallback durch
   }
-  return parts.join("\n");
+
+  // 2) Fallback: pdf-parse (wenn installiert)
+  try {
+    const mod: any = await import("pdf-parse").catch(() => null);
+    const pdfParse = mod?.default || mod;
+    if (pdfParse) {
+      const res = await pdfParse(Buffer.from(uint8));
+      const text = String(res?.text || "").replace(/\s+\n/g, "\n").trim();
+      if (text) {
+        const chunks = text.split(/\n{2,}/g).filter(Boolean).slice(0, 40);
+        const joined = chunks.map((t, i) => `Seite ${i + 1}:\n${t}`).join("\n\n---\n\n");
+        return joined.length > 60000 ? joined.slice(0, 60000) : joined;
+      }
+    }
+  } catch {
+    // Ignorieren, finaler Fallback unten
+  }
+
+  // 3) Letzter Fallback: leer
+  return "";
 }
 
-/* ---------- Normalisierung (EN→DE & Keys) ---------- */
+/* ---------------- Normalisierung (EN/DE) ---------------- */
 const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden" | "nicht gefunden"> = {
+  // englische Varianten
   met: "erfüllt",
   partial: "teilweise",
   missing: "fehlt",
   present: "vorhanden",
   not_found: "nicht gefunden",
+  "not_found": "nicht gefunden",
+  // deutsche Varianten
   erfüllt: "erfüllt",
   teilweise: "teilweise",
   fehlt: "fehlt",
@@ -261,6 +145,7 @@ const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden
 };
 
 const ART28_KEY_MAP: Record<string, string> = {
+  // EN → DE
   instructions_only: "weisung",
   confidentiality: "vertraulichkeit",
   security_TOMs: "toms",
@@ -269,16 +154,37 @@ const ART28_KEY_MAP: Record<string, string> = {
   breach_support: "vorfallmeldung",
   deletion_return: "löschung_rückgabe",
   audit_rights: "audit_nachweis",
+  // DE passthrough
+  weisung: "weisung",
+  vertraulichkeit: "vertraulichkeit",
+  toms: "toms",
+  unterauftragsverarbeiter: "unterauftragsverarbeiter",
+  betroffenenrechte: "betroffenenrechte",
+  vorfallmeldung: "vorfallmeldung",
+  "löschung_rückgabe": "löschung_rückgabe",
+  audit_nachweis: "audit_nachweis",
 };
+
 const EXTRAS_KEY_MAP: Record<string, string> = {
   international_transfers: "internationale_übermittlungen",
   liability_cap: "haftungsbegrenzung",
   jurisdiction: "gerichtsstand_recht",
+  // deutsche Varianten
+  "internationale_übermittlungen": "internationale_übermittlungen",
+  haftungsbegrenzung: "haftungsbegrenzung",
+  gerichtsstand_recht: "gerichtsstand_recht",
 };
 
-function normalizeAgentLike(json: any) {
-  const out: any = { vertrag_metadata: {}, prüfung: { art_28: {}, zusatzklauseln: {} }, actions: json?.actions ?? [] };
+function normalizeFromAgentLike(json: any) {
+  // akzeptiert: { contract_metadata, findings{art_28, additional_clauses}, risk_score?, actions? }
+  const out: any = {
+    vertrag_metadata: {},
+    prüfung: { art_28: {}, zusatzklauseln: {} },
+    risk_rationale: json?.risk_score?.rationale ?? null,
+    actions: json?.actions ?? [],
+  };
 
+  // Metadata
   if (json?.contract_metadata) {
     const m = json.contract_metadata;
     out.vertrag_metadata = {
@@ -292,63 +198,103 @@ function normalizeAgentLike(json: any) {
     };
   }
 
+  // Art. 28
   const a28 = json?.findings?.art_28 ?? {};
   for (const k of Object.keys(a28)) {
     const canon = ART28_KEY_MAP[k] ?? k;
     const st = STATUS_MAP[a28[k]?.status] ?? "fehlt";
-    const belege = a28[k]?.evidence ?? [];
+    const belege = a28[k]?.evidence ?? a28[k]?.belege ?? [];
     out.prüfung.art_28[canon] = { status: st, belege };
   }
+
+  // Zusatzklauseln
   const extras = json?.findings?.additional_clauses ?? {};
   for (const k of Object.keys(extras)) {
     const canon = EXTRAS_KEY_MAP[k] ?? k;
     const st = STATUS_MAP[extras[k]?.status] ?? "nicht gefunden";
-    const belege = extras[k]?.evidence ?? [];
+    const belege = extras[k]?.evidence ?? extras[k]?.belege ?? [];
     out.prüfung.zusatzklauseln[canon] = { status: st, belege };
   }
 
   return out;
 }
 
-/* ---------- Compliance-Score (deterministisch) ---------- */
-function computeComplianceScore(norm: any): number | null {
-  const a28 = norm?.prüfung?.art_28 || {};
-  const keys = [
-    "weisung",
-    "vertraulichkeit",
-    "toms",
-    "unterauftragsverarbeiter",
-    "betroffenenrechte",
-    "vorfallmeldung",
-    "löschung_rückgabe",
-    "audit_nachweis",
-  ];
+function normalizeFromModel(json: any) {
+  // akzeptiert unser Ziel-Schema { vertrag_metadata, prüfung{...}, risk_rationale? }
+  const out: any = {
+    vertrag_metadata: json?.vertrag_metadata ?? {},
+    prüfung: { art_28: {}, zusatzklauseln: {} },
+    risk_rationale: json?.risk_rationale ?? null,
+    actions: json?.actions ?? [],
+  };
 
-  let sum = 0;
-  let count = 0;
-  for (const k of keys) {
-    const st = a28[k]?.status;
-    if (!st) continue;
-    count++;
-    if (st === "erfüllt") sum += 1.0;
-    else if (st === "teilweise") sum += 0.5;
+  const a28 = json?.prüfung?.art_28 ?? {};
+  for (const k of Object.keys(a28)) {
+    const canon = ART28_KEY_MAP[k] ?? k;
+    const st = STATUS_MAP[a28[k]?.status] ?? "fehlt";
+    const belege = a28[k]?.belege ?? a28[k]?.evidence ?? [];
+    out.prüfung.art_28[canon] = { status: st, belege };
   }
-  if (count === 0) return null;
-  let compliance = (sum / keys.length) * 100;
 
-  const extras = norm?.prüfung?.zusatzklauseln || {};
-  const intl = extras["internationale_übermittlungen"]?.status;
-  if (intl === "erfüllt") compliance += 10;
-  else if (intl === "teilweise") compliance += 5;
-  else if (intl === "vorhanden") compliance += 3;
+  const extras = json?.prüfung?.zusatzklauseln ?? {};
+  for (const k of Object.keys(extras)) {
+    const canon = EXTRAS_KEY_MAP[k] ?? k;
+    const st = STATUS_MAP[extras[k]?.status] ?? "nicht gefunden";
+    const belege = extras[k]?.belege ?? extras[k]?.evidence ?? [];
+    out.prüfung.zusatzklauseln[canon] = { status: st, belege };
+  }
 
-  const liab = extras["haftungsbegrenzung"]?.status;
-  if (liab === "erfüllt" || liab === "vorhanden") compliance += 3;
+  return out;
+}
 
-  const juris = extras["gerichtsstand_recht"]?.status;
-  if (juris === "erfüllt" || juris === "vorhanden") compliance += 2;
+/* ---------------- Scoring: Compliance & Risiko ---------------- */
+const A28_KEYS_ORDER = [
+  "weisung",
+  "vertraulichkeit",
+  "toms",
+  "unterauftragsverarbeiter",
+  "betroffenenrechte",
+  "vorfallmeldung",
+  "löschung_rückgabe",
+  "audit_nachweis",
+];
 
-  return Math.max(0, Math.min(100, Math.round(compliance)));
+function calcCompliance(norm: any): number | null {
+  const a28 = norm?.art_28 ?? {};
+  let seen = 0;
+  let achieved = 0;
+
+  for (const k of A28_KEYS_ORDER) {
+    const st = a28?.[k]?.status;
+    if (!st) continue;
+    seen++;
+    if (st === "erfüllt") achieved += 1;
+    else if (st === "teilweise") achieved += 0.5;
+  }
+  if (seen === 0) return null;
+
+  // Grundscore aus Art.28
+  let score = (achieved / A28_KEYS_ORDER.length) * 100;
+
+  // Extras leicht positiv werten (optional)
+  const extras = norm?.zusatzklauseln ?? {};
+  const intl = extras?.["internationale_übermittlungen"]?.status;
+  if (intl === "erfüllt") score += 10;
+  else if (intl === "teilweise") score += 5;
+  else if (intl === "vorhanden") score += 3;
+
+  const liab = extras?.["haftungsbegrenzung"]?.status;
+  if (liab === "erfüllt" || liab === "vorhanden") score += 3;
+
+  const juris = extras?.["gerichtsstand_recht"]?.status;
+  if (juris === "erfüllt" || juris === "vorhanden") score += 2;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function calcRiskFromCompliance(comp: number | null): number | null {
+  if (comp == null) return null;
+  return Math.max(0, Math.min(100, 100 - comp));
 }
 
 /* ---------------- Handler ---------------- */
@@ -359,19 +305,21 @@ export async function POST(req: NextRequest) {
     if (!file) return NextResponse.json({ error: "Keine Datei übergeben" }, { status: 400 });
 
     const bytes = await file.arrayBuffer();
+    const textByPage = await extractPdfTextPerPage(bytes);
 
-    // (1) PDF extrahieren
-    const { joined, pages } = await extractPdf(bytes);
-    if (!joined) {
-      return NextResponse.json({ error: "Kein extrahierbarer Text (evtl. gescanntes PDF ohne OCR)." }, { status: 400 });
+    // Früh abbrechen, wenn wirklich nichts extrahiert wurde
+    if (!textByPage || textByPage.trim().length < 40) {
+      return NextResponse.json(
+        {
+          error: "PDF konnte nicht robust extrahiert werden",
+          details:
+            "Der PDF-Text ist leer oder beschädigt (z.B. defekte XRef-Tabelle). Bitte eine unveränderte/„nicht linearisierte“ PDF-Version verwenden oder das Original neu exportieren.",
+        },
+        { status: 400 }
+      );
     }
 
-    // (2) Snippets bauen & Hints erzeugen
-    const snips = buildSnippets(pages);
-    const hintsBlock = renderHints(snips);
-    const userText = `${joined}\n\n${hintsBlock}`;
-
-    // (3) Responses API mit JSON-Schema (Agent-Format)
+    // OpenAI Responses API – ohne JSON-Schema-Zwang (robuster), strikt durch Prompt
     const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -381,16 +329,12 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: process.env.OPENAI_MODEL ?? "gpt-4.1",
         temperature: 0,
-
         top_p: 1,
-        max_output_tokens: 5000,
+        max_output_tokens: 2500,
         input: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: [{ type: "input_text", text: userText }] },
+          { role: "user", content: [{ type: "input_text", text: textByPage }] },
         ],
-        text: {
-          format: JSON_FORMAT,
-        },
       }),
     });
 
@@ -399,48 +343,65 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "OpenAI error", details: api }, { status: 500 });
     }
 
-    const raw =
+    const rawText =
       api?.output_text ||
       api?.output?.[0]?.content?.[0]?.text ||
       api?.choices?.[0]?.message?.content ||
       "";
 
+    const jsonStr = String(rawText).trim().replace(/^```json\s*|\s*```$/g, "");
     let modelJson: any;
     try {
-      modelJson = JSON.parse(String(raw).trim());
+      modelJson = JSON.parse(jsonStr);
     } catch {
-      return NextResponse.json({ error: "Ungültiges JSON", preview: String(raw).slice(0, 300) }, { status: 500 });
+      return NextResponse.json(
+        { error: "Ungültiges JSON", preview: jsonStr.slice(0, 300) },
+        { status: 500 }
+      );
     }
 
-    // (4) In DE-UI-Format normalisieren (Agent-ähnlich → DE)
-    const norm = normalizeAgentLike(modelJson);
+    // Normalisieren (Agent-Format vs. Model-Format)
+    const looksLikeAgent = !!(modelJson?.contract_metadata && modelJson?.findings);
+    const normBlock = looksLikeAgent ? normalizeFromAgentLike(modelJson) : normalizeFromModel(modelJson);
 
-    // (5) Compliance-Score und Risiko
-    const compliance = computeComplianceScore(norm);
-    const risk = compliance == null ? null : (100 - compliance);
+    // Compliance & Risiko bestimmen
+    const providedCompliance =
+      typeof modelJson?.compliance_score?.overall === "number" ? modelJson.compliance_score.overall : null;
+    const computedCompliance = calcCompliance(normBlock.prüfung);
+    const finalCompliance = providedCompliance ?? computedCompliance;
+
+    const providedRisk =
+      typeof modelJson?.risk_score?.overall === "number" ? modelJson.risk_score.overall :
+      typeof modelJson?.risiko_score?.gesamt === "number" ? modelJson.risiko_score.gesamt :
+      null;
+
+    const finalRisk = providedRisk ?? calcRiskFromCompliance(finalCompliance);
 
     const result = {
-      vertrag_metadata: norm.vertrag_metadata,
-      prüfung: norm.prüfung,
-      actions: norm.actions ?? [],
+      vertrag_metadata: normBlock.vertrag_metadata,
+      prüfung: normBlock.prüfung,
+      actions: normBlock.actions ?? [],
       risk_rationale:
         modelJson?.risk_rationale ??
         modelJson?.risk_score?.rationale ??
-        (compliance == null ? "Keine verlässliche Bewertung möglich (zu wenig Text erkannt)." : null),
-
-      compliance_score: compliance == null ? null : {
-        overall: compliance,
+        (finalCompliance == null ? "Keine zuverlässige Bewertung möglich (zu wenig Text erkannt)." : null),
+      // neue, explizite Compliance-Ausgabe (0–100, höher = besser)
+      compliance_score: finalCompliance == null ? null : {
+        overall: finalCompliance,
         type: "compliance",
       },
-
-      risiko_score: risk == null ? null : {
-        gesamt: risk,
+      // Risiko (0–100, höher = schlechter)
+      risiko_score: finalRisk == null ? null : {
+        gesamt: finalRisk,
         typ: "risiko",
-        erklärung: "Ableitung: Risiko = 100 - Compliance. Hoher Compliance-Score bedeutet geringes Risiko.",
+        erklärung:
+          providedRisk != null
+            ? "Vom Modell/Agenten geliefert."
+            : "Ableitung: Risiko = 100 - Compliance. Hoher Compliance-Score bedeutet geringes Risiko.",
       },
-
-      risk_score: risk == null ? null : {
-        overall: risk,
+      // Kompatibilität
+      risk_score: finalRisk == null ? null : {
+        overall: finalRisk,
         rationale: modelJson?.risk_rationale ?? modelJson?.risk_score?.rationale ?? null,
         type: "risk",
       },
@@ -448,6 +409,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (e: any) {
-    return NextResponse.json({ error: "Serverfehler", details: e?.message ?? String(e) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Serverfehler", details: e?.message ?? String(e) },
+      { status: 500 }
+    );
   }
 }

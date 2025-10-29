@@ -42,8 +42,8 @@ function statusBlock(statuses: string[] = ["met", "partial", "missing"]) {
           type: "object",
           additionalProperties: false,
           properties: {
-            quote: { type: "string" },
-            page: { type: "number" },
+                    quote: { type: "string" },
+                    page: { type: "number" },
           },
           required: ["quote", "page"],
         },
@@ -53,6 +53,7 @@ function statusBlock(statuses: string[] = ["met", "partial", "missing"]) {
   };
 }
 
+// <-- reines JSON-Schema
 const AVV_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -73,12 +74,14 @@ const AVV_JSON_SCHEMA = {
               name: { type: "string" },
               country: { type: "string" },
             },
-            required: ["role", "name"],
+            // ✅ wichtiger Fix: country in required aufnehmen
+            required: ["role", "name", "country"],
           },
         },
       },
       required: ["title", "date", "parties"],
     },
+
     findings: {
       type: "object",
       additionalProperties: false,
@@ -120,6 +123,7 @@ const AVV_JSON_SCHEMA = {
       },
       required: ["art_28", "additional_clauses"],
     },
+
     risk_score: {
       type: "object",
       additionalProperties: false,
@@ -129,6 +133,7 @@ const AVV_JSON_SCHEMA = {
       },
       required: ["overall", "rationale"],
     },
+
     actions: {
       type: "array",
       items: {
@@ -146,14 +151,13 @@ const AVV_JSON_SCHEMA = {
   required: ["contract_metadata", "findings", "risk_score", "actions"],
 } as const;
 
-/** EINMALIG lassen! */
+// Format-Objekt unverändert lassen:
 const JSON_FORMAT = {
   type: "json_schema",
   name: "AVVSchema",
   strict: true,
   schema: AVV_JSON_SCHEMA,
 } as const;
-
 
 /* ---------- PDF-Extraktion (ohne Worker) ---------- */
 async function extractPdf(file: ArrayBuffer): Promise<{ joined: string; pages: string[] }> {

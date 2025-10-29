@@ -212,8 +212,8 @@ export async function POST(req: NextRequest) {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: process.envOPENAI_MODEL ?? "gpt-4.1", // oder env setzen
+     body: JSON.stringify({
+        model: process.env.OPENAI_MODEL ?? "gpt-4.1",
         temperature: 0,
         top_p: 1,
         max_output_tokens: 2500,

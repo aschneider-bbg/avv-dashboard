@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 /* ---------------- Prompt (Deutsch) ---------------- */
 const SYSTEM_PROMPT = `
-Du bist ein AVV-Analyst. Lies den Vertragstext (pro Seite markiert) und gib AUSSCHLIESSLICH valides JSON zurück:
+Du bist ein AVV-Analyst. Lies den Vertragstext (Seiten sind mit "Seite N:" markiert) und gib AUSSCHLIESSLICH valides JSON zurück:
 
 {
   "vertrag_metadata": {
@@ -35,42 +35,126 @@ Du bist ein AVV-Analyst. Lies den Vertragstext (pro Seite markiert) und gib AUSS
 
 Vorgaben:
 - Exakt diese Feldnamen verwenden.
-- Status genau im genannten Vokabular.
-- Belege immer mit "page" (Seite aus dem bereitgestellten Text; Seiten sind als "Seite N:" markiert) und kurzem "quote".
-- Nur das JSON, keine Markdown-Fences.
+- Status nur aus dem genannten Vokabular.
+- Belege IMMER mit "page" (entspricht der 'Seite N' im Text) und kurzem "quote".
+- Kein Markdown, keine Prosa außerhalb des JSON.
+- Wenn Hinweise (Seitenlisten) vorhanden sind, nutze sie gezielt zur Belegsuche.
 `;
 
+/* ---------- Keyword-Lexikon je Kategorie (für Hinweise an das Modell) ---------- */
+const KEYWORDS: Record<string, string[]> = {
+  weisung: [
+    "Weisung", "Weisungen", "dokumentierte Weisung", "auf Weisung", "Instruktion", "Instruction",
+  ],
+  vertraulichkeit: [
+    "Vertraulichkeit", "Verschwiegenheit", "Geheimhaltung", "Geheimnis", "Non-Disclosure",
+    "Datengeheimnis", "Confidentiality",
+  ],
+  toms: [
+    "Technisch-organisatorische", "TOM", "TOMs", "Stand der Technik", "Sicherheitsmaßnahme", "ISO 27001",
+    "Privacy by Design", "Privacy by Default",
+  ],
+  unterauftragsverarbeiter: [
+    "Unterauftragsverarbeiter", "Subunternehmer", "Subprozessor", "Unterauftragnehmer", "Unterverarbeiter",
+    "Subprocessor", "Genehmigung Unterauftrag",
+  ],
+  betroffenenrechte: [
+    "Betroffenenrechte", "Auskunft", "Berichtigung", "Löschung", "Einschränkung", "Datenübertragbarkeit",
+    "Widerspruch", "Art. 15", "Art. 16", "Art. 17", "Art. 18", "Art. 20", "Art. 21",
+  ],
+  vorfallmeldung: [
+    "Datenschutzverletzung", "Breach", "Meldung", "Meldepflicht", "72 Stunden", "Incident", "Sicherheitsvorfall",
+  ],
+  "löschung_rückgabe": [
+    "Löschung", "Rückgabe", "nach Vertragsende", "Rückübertragung", "Vernichtung", "Deletion", "Return of Data",
+  ],
+  audit_nachweis: [
+    "Audit", "Nachweis", "Kontrolle", "Inspektion", "Prüfung", "Auditrechte", "Nachweispflichten",
+  ],
+  // Zusatzklauseln
+  internationale_übermittlungen: [
+    "international", "Drittland", "Übermittlung", "Standardvertragsklauseln", "SCC", "SVK", "UK", "USA", "Transfer",
+  ],
+  haftungsbegrenzung: [
+    "Haftung", "Haftungsbegrenzung", "Haftungsausschluss", "limitiert", "beschränkt", "Liability",
+  ],
+  gerichtsstand_recht: [
+    "Gerichtsstand", "anwendbares Recht", "Rechtswahl", "Jurisdiction", "Governing Law",
+  ],
+};
+
 /* ---- PDF-Text pro Seite: robust ohne Worker mit pdf-parse ---- */
-async function extractPdfTextPerPage(file: ArrayBuffer): Promise<string> {
+async function extractPdfTextPerPage(file: ArrayBuffer): Promise<{ joined: string; pages: string[] }> {
   const pdfParseMod = await import("pdf-parse");
   const pdfParse = (pdfParseMod as any).default ?? (pdfParseMod as any);
 
-  // Wir sammeln pro Seite den Text in ein Array
   const pages: string[] = [];
-  const result = await pdfParse(Buffer.from(file), {
-    // pagerender gibt uns Text je Seite – ohne Browser-Worker
+  const res = await pdfParse(Buffer.from(file), {
     pagerender: async (pageData: any) => {
       const tc = await pageData.getTextContent();
-      const text = (tc.items || []).map((it: any) => it.str).join(" ").replace(/\s+/g, " ").trim();
+      // KEIN aggressives Entfernen von Zeilenumbrüchen – Struktur behalten
+      const text = (tc.items || [])
+        .map((it: any) => (it.str ?? ""))
+        .join("\n")
+        .replace(/[ \t]+\n/g, "\n") // trailing spaces vor Zeilenumbruch weg
+        .replace(/\n{3,}/g, "\n\n") // keine zu langen Lücken
+        .trim();
       pages.push(text);
-      return ""; // wichtig: Rückgabewert wird von pdf-parse verworfen, wir nutzen `pages`
+      return "";
     },
-    max: 80, // Hardcap: maximal 80 Seiten
+    max: 80,
   });
 
-  // Fallback: falls pagerender nicht geliefert hat (z.B. sehr exotisches PDF)
+  // Fallback: res.text falls pagerender nichts brachte (z.B. gescannt)
   if (pages.length === 0) {
-    const flat = String(result?.text || "").replace(/\s+/g, " ").trim();
-    if (!flat) return ""; // signalisiert "nichts extrahiert"
-    return `Seite 1:\n${flat.slice(0, 60000)}`;
+    const flat = String(res?.text || "").trim();
+    if (!flat) return { joined: "", pages: [] };
+    return { joined: `Seite 1:\n${flat.slice(0, 120000)}`, pages: [flat] };
   }
 
-  // Seiten zusammenbauen im bekannten Format "Seite N:"
   const joined = pages
     .map((t, i) => `Seite ${i + 1}:\n${t}`)
     .join("\n\n---\n\n");
 
-  return joined.length > 60000 ? joined.slice(0, 60000) : joined;
+  return { joined: joined.length > 120000 ? joined.slice(0, 120000) : joined, pages };
+}
+
+/* ---------- baue kompakten Hinweis-Block aus KEYWORDS je Seite ---------- */
+function buildKeywordHints(pages: string[]): string {
+  if (!pages.length) return "";
+  const lines: string[] = [];
+  const lowerPages = pages.map((p) => p.toLowerCase());
+
+  const groups: Array<{ canon: string; label: string }> = [
+    { canon: "weisung", label: "weisung" },
+    { canon: "vertraulichkeit", label: "vertraulichkeit" },
+    { canon: "toms", label: "toms" },
+    { canon: "unterauftragsverarbeiter", label: "unterauftragsverarbeiter" },
+    { canon: "betroffenenrechte", label: "betroffenenrechte" },
+    { canon: "vorfallmeldung", label: "vorfallmeldung" },
+    { canon: "löschung_rückgabe", label: "löschung_rückgabe" },
+    { canon: "audit_nachweis", label: "audit_nachweis" },
+    { canon: "internationale_übermittlungen", label: "internationale_übermittlungen" },
+    { canon: "haftungsbegrenzung", label: "haftungsbegrenzung" },
+    { canon: "gerichtsstand_recht", label: "gerichtsstand_recht" },
+  ];
+
+  for (const g of groups) {
+    const kws = KEYWORDS[g.canon] || [];
+    if (!kws.length) continue;
+    const hits: number[] = [];
+    lowerPages.forEach((txt, idx) => {
+      for (const kw of kws) {
+        if (txt.includes(kw.toLowerCase())) { hits.push(idx + 1); break; }
+      }
+    });
+    if (hits.length) {
+      lines.push(`${g.label}: Seiten ${hits.join(", ")}`);
+    }
+  }
+
+  if (!lines.length) return "";
+  return `\n\nHinweise (Seiten mit passenden Schlüsselwörtern):\n${lines.map((l) => `- ${l}`).join("\n")}\n`;
 }
 
 /* ---------------- Normalisierung (EN/DE) ---------------- */
@@ -79,7 +163,7 @@ const STATUS_MAP: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden
   partial: "teilweise",
   missing: "fehlt",
   present: "vorhanden",
-  not_found: "nicht gefunden",        // ← Nur EINMAL vorhanden
+  not_found: "nicht gefunden",
   erfüllt: "erfüllt",
   teilweise: "teilweise",
   fehlt: "fehlt",
@@ -210,22 +294,29 @@ export async function POST(req: NextRequest) {
     if (!file) return NextResponse.json({ error: "Keine Datei übergeben" }, { status: 400 });
 
     const bytes = await file.arrayBuffer();
-    const textByPage = await extractPdfTextPerPage(bytes);
 
+    // 1) Text extrahieren
+    const { joined, pages } = await extractPdfTextPerPage(bytes);
+
+    // 2) Keyword-Hinweise erzeugen (steigert Trefferquote für Belege)
+    const hints = buildKeywordHints(pages);
+    const userContent = `${joined}${hints}`;
+
+    // 3) Modell aufrufen
     const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-     body: JSON.stringify({
+      body: JSON.stringify({
         model: process.env.OPENAI_MODEL ?? "gpt-4.1",
         temperature: 0,
         top_p: 1,
-        max_output_tokens: 2500,
+        max_output_tokens: 4000,
         input: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: [{ type: "input_text", text: textByPage }] },
+          { role: "user", content: [{ type: "input_text", text: userContent }] },
         ],
       }),
     });
@@ -249,9 +340,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Ungültiges JSON", preview: jsonStr.slice(0, 300) }, { status: 500 });
     }
 
+    // 4) Normalisieren (Agent-Format vs. Model-Format)
     const looksLikeAgent = !!(modelJson?.contract_metadata && modelJson?.findings);
     const normBlock = looksLikeAgent ? normalizeFromAgentLike(modelJson) : normalizeFromModel(modelJson);
 
+    // 5) Risiko (bevorzugt bereitgestellten Score, sonst deterministisch)
     const providedRisk =
       modelJson?.risk_score?.overall ?? modelJson?.risiko_score?.gesamt ?? null;
     const computedRisk = calcRisk(normBlock.prüfung);
@@ -270,6 +363,7 @@ export async function POST(req: NextRequest) {
         typ: "risiko",
         erklärung: "Berechnung: erfüllt=0, teilweise=-10, fehlt=-25 (Startwert 100, 0–100).",
       },
+      // Kompatibilität für die bestehende UI
       risk_score: riskFinal == null ? null : {
         overall: riskFinal,
         rationale: modelJson?.risk_rationale ?? modelJson?.risk_score?.rationale ?? null,

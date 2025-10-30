@@ -197,6 +197,8 @@ export default function Page() {
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
   }, [data]);
 
+
+    const providedCompliance: number | null = isNum(raw?.compliance_score?.overall) ? raw.compliance_score.overall : null;
   /* ---- Compliance/Risk ---- */
   const complianceMatrix = useMemo(() => {
     if (!kpis.any) return null;
@@ -225,11 +227,23 @@ export default function Page() {
     .some((t) => rationaleText.includes(t));
   const isLikelyComplianceScore = agentOverall != null && agentOverall >= 60 && mentionsPositive;
 
-  const compliance = isLikelyComplianceScore ? agentOverall : complianceMatrix;
-  const risk = isLikelyComplianceScore
-    ? (compliance != null ? Math.max(0, 100 - (compliance as number)) : null)
-    : (isNum(data?.riskOverall) ? (data!.riskOverall as number)
-       : (agentOverall != null ? agentOverall : (compliance != null ? Math.max(0, 100 - (compliance as number)) : null)));
+//   const compliance = isLikelyComplianceScore ? agentOverall : complianceMatrix;
+//   const risk = isLikelyComplianceScore
+//     ? (compliance != null ? Math.max(0, 100 - (compliance as number)) : null)
+//     : (isNum(data?.riskOverall) ? (data!.riskOverall as number)
+//        : (agentOverall != null ? agentOverall : (compliance != null ? Math.max(0, 100 - (compliance as number)) : null)));
+
+  // Compliance: wenn der Agent einen offiziellen Wert liefert -> immer diesen nehmen.
+  const compliance =
+    providedCompliance ??
+    (isLikelyComplianceScore ? agentOverall : complianceMatrix);
+
+  // Risiko: wenn der Agent einen offiziellen Risiko-Score liefert -> nutzen,
+  // sonst als 100 - Compliance ableiten (falls vorhanden).
+  const risk =
+    isNum(raw?.risk_score?.overall)
+      ? (raw!.risk_score!.overall as number)
+      : (compliance != null ? Math.max(0, 100 - (compliance as number)) : null);
 
   const compColor = compliance == null ? "text-secondary" : compliance >= 85 ? "text-success" : compliance >= 70 ? "text-warning" : "text-danger";
   const riskColor = risk == null ? "text-secondary" : risk <= 20 ? "text-success" : risk <= 40 ? "text-warning" : "text-danger";

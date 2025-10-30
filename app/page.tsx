@@ -158,7 +158,7 @@ export default function Page() {
 
   // ---- Compliance & Risiko ----
 
-  // 1) Compliance aus Matrix berechnen (erfüllt=1, teilweise=0.5, fehlt=0) + leichte Gewichtung der Zusatzklauseln
+  // 1) Compliance aus Matrix berechnen + leichte Gewichtung der Zusatzklauseln
   const complianceMatrix = useMemo(() => {
     if (!kpis.any) return null;
     const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
@@ -179,15 +179,12 @@ export default function Page() {
     return Math.max(0, Math.min(100, Math.round(score)));
   }, [kpis, data?.extras]);
 
-  // 2) Agent-Output: Manche Agent-Konfigurationen liefern risk_score.overall als POSITIVEN Score (Compliance)
+  // 2) Agent-Output (manchmal "risk_score.overall" als POSITIVER Score = Compliance)
   const agentOverall: number | null =
     typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : null;
 
   const rationaleText = (raw?.risk_score?.rationale || data?.riskRationale || "").toString().toLowerCase();
-
-  // Positiv-Tokens: wenn im Rationale-Text vorhanden, interpretieren wir agentOverall als Compliance
   const POSITIVE_TOKENS = [
-    "deckt die wesentlichen anforderungen",
     "wesentlichen anforderungen",
     "anforderungen abgedeckt",
     "weitgehend erfüllt",
@@ -196,20 +193,28 @@ export default function Page() {
     "entspricht art. 28",
   ];
   const mentionsPositive = POSITIVE_TOKENS.some((t) => rationaleText.includes(t));
-  const isLikelyComplianceScore = agentOverall != null && (agentOverall >= 60 || mentionsPositive) && mentionsPositive;
 
-  // 3) Finale Compliance: Agent (wenn positiv erkannt) > Matrix-Fallback
+  const isLikelyComplianceScore =
+    agentOverall != null &&
+    (agentOverall >= 60 || mentionsPositive) &&
+    mentionsPositive;
+
+  // 3) Finale Compliance
   const compliance = isLikelyComplianceScore ? agentOverall : complianceMatrix;
 
-  // 4) Risiko: Falls Agentwert negativ zu interpretieren ist, nutze ihn; sonst 100 - Compliance
-  const serverRiskClassic: number | null =
-    typeof data?.riskOverall === "number" ? data.riskOverall : null;
-
-  const risk = !isLikelyComplianceScore && agentOverall != null
-    ? agentOverall
-    : (serverRiskClassic != null
-        ? serverRiskClassic
-        : (compliance != null ? Math.max(0, 100 - compliance) : null));
+  // 4) Finale Risiko
+  // WICHTIGER FIX: Wenn der Agent-Wert als Compliance interpretiert wurde,
+  // ignorieren wir jeden serverseitigen Risiko-Wert und leiten Risiko IMMER invers ab.
+  const risk =
+    isLikelyComplianceScore
+      ? (compliance != null ? Math.max(0, 100 - compliance) : null)
+      : (
+          // sonst: echter Risiko-Score aus normalisiertem Modell
+          (typeof data?.riskOverall === "number"
+            ? data.riskOverall
+            // oder – wenn Agent-Wert wirklich Risiko sein sollte – nutze diesen
+            : (agentOverall != null ? agentOverall : (compliance != null ? Math.max(0, 100 - compliance) : null)))
+        );
 
   // Ampellogik
   const compColor =
@@ -500,7 +505,7 @@ export default function Page() {
                         : k === "haftungsbegrenzung"
                         ? "Haftungsbegrenzung"
                         : "Gerichtsstand/Recht";
-                    const f = data?.extras?.[k] ?? {};
+                    const f = (data?.extras as any)?.[k] ?? {};
                     const belege = (f as any).belege ?? [];
                     return (
                       <tr key={k}>

@@ -248,40 +248,45 @@ export default function Page() {
   // Doughnut
   const donut = useMemo(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
   useEffect(() => {
-    const Chart = (window as any).Chart as any;
-    if (!Chart || !chartRef.current) return;
+    console.log("Chart data:", { donut, data, kpis });
+    
+  const Chart = (window as any).Chart as any;
+  if (!Chart || !chartRef.current) return;
 
-    if (!data || !kpis.any) {
-      if (chartInst.current) {
-        chartInst.current.destroy();
-        chartInst.current = null;
-      }
-      return;
-    }
-    if (chartInst.current) chartInst.current.destroy();
-    chartInst.current = new Chart(chartRef.current, {
-      type: "doughnut",
-      data: {
-        labels: ["erfüllt", "teilweise", "fehlt"],
-        datasets: [
-          {
-            data: donut,
-            backgroundColor: ["#16a34a", "#f59e0b", "#ef4444"],
-            borderColor: "#0b0e14",
-            borderWidth: 2,
-            hoverOffset: 6,
-          },
-        ],
-      },
-      options: {
-        plugins: {
-          legend: { position: "bottom", labels: { color: "#f1f4fa" } },
-          tooltip: { enabled: true },
+  // destroy any existing chart
+  if (chartInst.current) {
+    chartInst.current.destroy();
+    chartInst.current = null;
+  }
+
+  // Sicherheitscheck: sind Daten vorhanden?
+  if (!data || !kpis.any || !Array.isArray(donut) || donut.length !== 3) return;
+
+  chartInst.current = new Chart(chartRef.current, {
+    type: "doughnut",
+    data: {
+      labels: Array.isArray(["erfüllt", "teilweise", "fehlt"])
+        ? ["erfüllt", "teilweise", "fehlt"]
+        : [],
+      datasets: [
+        {
+          data: Array.isArray(donut) ? donut : [0, 0, 0],
+          backgroundColor: ["#16a34a", "#f59e0b", "#ef4444"],
+          borderColor: "#0b0e14",
+          borderWidth: 2,
+          hoverOffset: 6,
         },
-        cutout: "65%",
+      ],
+    },
+    options: {
+      plugins: {
+        legend: { position: "bottom", labels: { color: "#f1f4fa" } },
+        tooltip: { enabled: true },
       },
-    });
-  }, [donut, data, kpis.any]);
+      cutout: "65%",
+    },
+  });
+}, [donut, data, kpis.any]);
 
   // Upload Handler
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

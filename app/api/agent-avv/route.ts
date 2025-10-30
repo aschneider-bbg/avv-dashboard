@@ -125,16 +125,18 @@ function hardSplitByChars(s: string, maxChars: number): string[] {
 
 /** ========= JSON aus Agent-Output extrahieren ========= */
 function extractJson(output: string): any {
-  const cleaned = output.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
-  // Letzten JSON-Block nehmen (Hybrid-Output: Bericht + JSON)
-  const start = cleaned.lastIndexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    const candidate = cleaned.slice(start, end + 1);
-    try { return JSON.parse(candidate); } catch {}
+  if (!output) throw new Error("Leere Antwort vom Agent.");
+  const cleaned = output.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+
+  // Finde den größten JSON-Block im Text
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch (err) {
+      console.warn("JSON-Parsing-Warnung:", err);
+    }
   }
-  // Fallback: mancher Agent liefert reines JSON
-  try { return JSON.parse(cleaned); } catch {}
   throw new Error("Konnte keinen gültigen JSON-Block aus der Agent-Antwort extrahieren.");
 }
 

@@ -239,29 +239,43 @@ function labelScoreKey(k: string) {
 /** Tooltip-Text aus compliance_score bauen */
 function buildComplianceTooltip(raw: any, fallbackCompliance: number | null) {
   const cs = raw?.compliance_score || {};
-  const details = cs?.details && typeof cs.details === "object" ? cs.details : null;
-  const bonus = typeof cs?.bonus === "number" ? cs.bonus : null;
-  const penalties = typeof cs?.penalties === "number" ? cs.penalties : null;
-  const rational = typeof cs?.rationale === "string" ? cs.rationale.trim() : "";
+  const details =
+    cs?.details && typeof cs.details === "object" ? cs.details : null;
+  const bonus =
+    typeof cs?.bonus === "number"
+      ? cs.bonus
+      : typeof cs?.bonuses === "number"
+      ? cs.bonuses
+      : null;
+  const penalties =
+    typeof cs?.penalties === "number"
+      ? cs.penalties
+      : typeof cs?.deductions === "number"
+      ? cs.deductions
+      : null;
+  const rationale =
+    typeof cs?.rationale === "string" ? cs.rationale.trim() : "";
 
-  // Kopfzeile
   let text = "Begründung Compliance\n";
-  text += rational ? `${rational}\n\n` : "—\n\n";
+  text += rationale ? `${rationale}\n\n` : "—\n\n";
   text += "Detailpunkte\n";
 
-  if (details) {
-    Object.entries(details).forEach(([k, v]) => {
-      const val = typeof v === "number" ? v : Number(v) || 0;
-      text += `• ${labelScoreKey(k)}: ${val}\n`;
-    });
+  if (details && Object.keys(details).length > 0) {
+    for (const [key, val] of Object.entries(details)) {
+      const num = typeof val === "number" ? val : Number(val) || 0;
+      const label =
+        SCORE_KEY_LABELS[key] ??
+        key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
+      text += `• ${label}: ${num}\n`;
+    }
   } else if (fallbackCompliance != null) {
-    text += `• (ohne Agent-Details) berechneter Score: ${fallbackCompliance}\n`;
+    text += `• (berechneter Score): ${fallbackCompliance}\n`;
   } else {
     text += "• —\n";
   }
 
-  if (bonus != null) text += `• ${labelScoreKey("bonus")}: ${bonus}\n`;
-  if (penalties != null) text += `• ${labelScoreKey("penalties")}: ${penalties}\n`;
+  if (bonus != null) text += `• Bonus: +${bonus}\n`;
+  if (penalties != null) text += `• Abzüge: −${penalties}\n`;
 
   return text.trim();
 }

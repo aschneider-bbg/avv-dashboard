@@ -213,6 +213,9 @@ export async function POST(req: NextRequest) {
       runner.run(mergeAgent, [{ role: "user", content: [{ type: "input_text", text: mergeInput }] }])
     );
 
+    if (!merged?.finalOutput) {
+        throw new Error("Merge-Agent lieferte keine finale Ausgabe.");
+    }
     const finalJson = extractJson(merged.finalOutput);
     return NextResponse.json(finalJson);
   } catch (e: any) {

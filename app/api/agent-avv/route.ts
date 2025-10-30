@@ -48,11 +48,9 @@ export async function POST(req: NextRequest) {
     }
 
     // 🔥 Workflow-Trigger im Agent Builder
-    const run = await client.workflows.runs.create({
-      workflow_id: "wf_69010691804c8190a4d2dbf8d912f9df0957f13e0b29397a", // dein Agent Builder Workflow
-      inputs: {
-        input_as_text: textContent,
-      },
+    const run = await client.beta.workflows.runs.create({
+        workflow_id: "wf_69010691804c8190a4d2dbf8d912f9df0957f13e0b29397a",
+        inputs: { input_as_text: textContent },
     });
 
     // Warten bis Workflow fertig ist
@@ -60,7 +58,7 @@ export async function POST(req: NextRequest) {
     const maxTries = 20;
     for (let i = 0; i < maxTries; i++) {
       await new Promise((r) => setTimeout(r, 3000)); // 3 Sek. Polling
-      const current = await client.workflows.runs.retrieve(run.id);
+      const current = await client.beta.workflows.runs.retrieve(run.id);
       if (current.status === "succeeded") {
         completed = current;
         break;

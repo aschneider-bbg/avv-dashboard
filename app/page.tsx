@@ -238,35 +238,40 @@ function labelScoreKey(k: string) {
 
 /** Tooltip-Text aus compliance_score bauen */
 function buildComplianceTooltip(raw: any, fallbackCompliance: number | null) {
-  const cs = raw?.compliance_score || {};
-  const details =
-    cs?.details && typeof cs.details === "object" ? cs.details : null;
+  const cs = raw?.compliance_score ?? {};
+  const details: Record<string, number> =
+    typeof cs.details === "object" && cs.details !== null ? cs.details : {};
   const bonus =
-    typeof cs?.bonus === "number"
+    typeof cs.bonus === "number"
       ? cs.bonus
-      : typeof cs?.bonuses === "number"
+      : typeof cs.bonuses === "number"
       ? cs.bonuses
       : null;
   const penalties =
-    typeof cs?.penalties === "number"
+    typeof cs.penalties === "number"
       ? cs.penalties
-      : typeof cs?.deductions === "number"
+      : typeof cs.deductions === "number"
       ? cs.deductions
       : null;
   const rationale =
-    typeof cs?.rationale === "string" ? cs.rationale.trim() : "";
+    typeof cs.rationale === "string" && cs.rationale.trim().length > 0
+      ? cs.rationale.trim()
+      : "";
 
+  // Tooltip-Inhalt zusammenbauen
   let text = "Begründung Compliance\n";
   text += rationale ? `${rationale}\n\n` : "—\n\n";
   text += "Detailpunkte\n";
 
-  if (details && Object.keys(details).length > 0) {
-    for (const [key, val] of Object.entries(details)) {
-      const num = typeof val === "number" ? val : Number(val) || 0;
+  // sichere Iteration, ohne .map()
+  const keys = Object.keys(details);
+  if (keys.length > 0) {
+    for (const key of keys) {
+      const val = details[key];
       const label =
         SCORE_KEY_LABELS[key] ??
         key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
-      text += `• ${label}: ${num}\n`;
+      text += `• ${label}: ${val}\n`;
     }
   } else if (fallbackCompliance != null) {
     text += `• (berechneter Score): ${fallbackCompliance}\n`;
@@ -458,19 +463,18 @@ export default function Page() {
             <div className="d-flex flex-wrap gap-3">
               {/* Compliance */}
               <div className="card p-3" style={{ minWidth: 200 }}>
-                <div className="muted d-flex align-items-center gap-1">
-                    <span>Compliance</span>
-                    {/** Tooltip nur zeigen, wenn wir Daten haben */}
-                    {(raw?.compliance_score || compliance != null) && (
+               <div className="muted d-flex align-items-center gap-1">
+                <span>Compliance</span>
+                {(raw?.compliance_score || compliance != null) && (
                     <Tooltip text={buildComplianceTooltip(raw, compliance)}>
-                        <i
+                    <i
                         className="bi bi-info-circle ms-1"
                         style={{ fontSize: 14, color: "#9db2d6", cursor: "help" }}
                         aria-label="Scoring-Details"
                         tabIndex={0}
-                        />
+                    />
                     </Tooltip>
-                    )}
+                )}
                 </div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>{compLabel}</div>

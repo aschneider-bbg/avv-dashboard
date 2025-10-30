@@ -175,115 +175,6 @@ function normalize(input: any) {
   };
 }
 
-/** ========= Mini-Tooltip (ohne Lib) ========= */
-function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
-  return (
-    <span className="bbg-tooltip">
-      {children}
-      <span className="bbg-tooltip-content">{text}</span>
-      <style jsx>{`
-        .bbg-tooltip {
-          position: relative;
-          display: inline-flex;
-          align-items: center;
-        }
-        .bbg-tooltip-content {
-          position: absolute;
-          left: 50%;
-          bottom: 135%;
-          transform: translateX(-50%);
-          min-width: 260px;
-          max-width: 420px;
-          padding: 10px 12px;
-          border-radius: 8px;
-          background: #0b0e14;
-          color: #e8eefc;
-          border: 1px solid #1d2540;
-          box-shadow: 0 8px 24px rgba(0,0,0,.35);
-          font-size: 12.5px;
-          line-height: 1.35;
-          white-space: pre-wrap;
-          opacity: 0;
-          pointer-events: none;
-          transition: opacity .15s ease, transform .15s ease;
-          z-index: 50;
-        }
-        .bbg-tooltip:hover .bbg-tooltip-content,
-        .bbg-tooltip:focus-within .bbg-tooltip-content {
-          opacity: 1;
-          transform: translateX(-50%) translateY(-2px);
-        }
-      `}</style>
-    </span>
-  );
-}
-
-/** EN->DE für Scoring-Keys */
-const SCORE_KEY_LABELS: Record<string, string> = {
-  instructions_only: "Weisung (nur auf dokumentierte Weisung)",
-  confidentiality: "Vertraulichkeit",
-  security_TOMs: "Technisch-organisatorische Maßnahmen",
-  subprocessors: "Unterauftragsverarbeiter",
-  data_subject_rights_support: "Unterstützung Betroffenenrechte",
-  breach_support: "Unterstützung bei Datenschutzverletzungen",
-  deletion_return: "Löschung/Rückgabe nach Vertragsende",
-  audit_rights: "Audit- und Nachweisrechte",
-  bonus: "Bonus",
-  penalties: "Abzüge",
-};
-
-function labelScoreKey(k: string) {
-  return SCORE_KEY_LABELS[k] ?? k.replace(/_/g, " ");
-}
-
-/** Tooltip-Text aus compliance_score bauen */
-function buildComplianceTooltip(raw: any, fallbackCompliance: number | null) {
-  const cs = raw?.compliance_score ?? {};
-  const details: Record<string, number> =
-    typeof cs.details === "object" && cs.details !== null ? cs.details : {};
-  const bonus =
-    typeof cs.bonus === "number"
-      ? cs.bonus
-      : typeof cs.bonuses === "number"
-      ? cs.bonuses
-      : null;
-  const penalties =
-    typeof cs.penalties === "number"
-      ? cs.penalties
-      : typeof cs.deductions === "number"
-      ? cs.deductions
-      : null;
-  const rationale =
-    typeof cs.rationale === "string" && cs.rationale.trim().length > 0
-      ? cs.rationale.trim()
-      : "";
-
-  // Tooltip-Inhalt zusammenbauen
-  let text = "Begründung Compliance\n";
-  text += rationale ? `${rationale}\n\n` : "—\n\n";
-  text += "Detailpunkte\n";
-
-  // sichere Iteration, ohne .map()
-  const keys = Object.keys(details);
-  if (keys.length > 0) {
-    for (const key of keys) {
-      const val = details[key];
-      const label =
-        SCORE_KEY_LABELS[key] ??
-        key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
-      text += `• ${label}: ${val}\n`;
-    }
-  } else if (fallbackCompliance != null) {
-    text += `• (berechneter Score): ${fallbackCompliance}\n`;
-  } else {
-    text += "• —\n";
-  }
-
-  if (bonus != null) text += `• Bonus: +${bonus}\n`;
-  if (penalties != null) text += `• Abzüge: −${penalties}\n`;
-
-  return text.trim();
-}
 
 /** ========= Komponente ========= */
 export default function Page() {
@@ -463,29 +354,17 @@ export default function Page() {
             <div className="d-flex flex-wrap gap-3">
               {/* Compliance */}
               <div className="card p-3" style={{ minWidth: 200 }}>
-               <div className="muted d-flex align-items-center gap-1">
-                <span>Compliance</span>
-                {(raw?.compliance_score || compliance != null) && (
-                    <Tooltip text={buildComplianceTooltip(raw, compliance)}>
-                    <i
-                        className="bi bi-info-circle ms-1"
-                        style={{ fontSize: 14, color: "#9db2d6", cursor: "help" }}
-                        aria-label="Scoring-Details"
-                        tabIndex={0}
-                    />
-                    </Tooltip>
-                )}
-                </div>
+                <div className="muted">Compliance</div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>{compLabel}</div>
                 {compliance == null ? (
-                    <div className="mt-1 small muted">No data</div>
+                  <div className="mt-1 small muted">No data</div>
                 ) : (
-                    <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
+                  <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
                     <div className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`} style={{ width: `${compliance}%` }} />
-                    </div>
+                  </div>
                 )}
-                </div>
+              </div>
 
               {/* Risiko */}
               <div className="card p-3" style={{ minWidth: 200 }}>

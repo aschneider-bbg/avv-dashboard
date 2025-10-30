@@ -444,17 +444,30 @@ export default function Page() {
             <div className="d-flex flex-wrap gap-3">
               {/* Compliance */}
               <div className="card p-3" style={{ minWidth: 200 }}>
-                <div className="muted">Compliance</div>
+                <div className="muted d-flex align-items-center gap-1">
+                    <span>Compliance</span>
+                    {/** Tooltip nur zeigen, wenn wir Daten haben */}
+                    {(raw?.compliance_score || compliance != null) && (
+                    <Tooltip text={buildComplianceTooltip(raw, compliance)}>
+                        <i
+                        className="bi bi-info-circle ms-1"
+                        style={{ fontSize: 14, color: "#9db2d6", cursor: "help" }}
+                        aria-label="Scoring-Details"
+                        tabIndex={0}
+                        />
+                    </Tooltip>
+                    )}
+                </div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>{compLabel}</div>
                 {compliance == null ? (
-                  <div className="mt-1 small muted">No data</div>
+                    <div className="mt-1 small muted">No data</div>
                 ) : (
-                  <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
+                    <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
                     <div className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`} style={{ width: `${compliance}%` }} />
-                  </div>
+                    </div>
                 )}
-              </div>
+                </div>
 
               {/* Risiko */}
               <div className="card p-3" style={{ minWidth: 200 }}>

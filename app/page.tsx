@@ -1,7 +1,11 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-/** ========= Typen ========= */
+/* ---------- Hilfsfunktionen (robust) ---------- */
+const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : []);
+const isNum = (v: any) => typeof v === "number" && Number.isFinite(v);
+
+/* ---------- Typen ---------- */
 type Evidence = { quote: string; page?: number };
 
 const ART28_LABELS: Record<string, string> = {
@@ -35,7 +39,6 @@ const STATUS_EN_TO_DE: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorh
 };
 
 const ACTION_CATEGORY_DE: Record<string, string> = {
-  // Kern-Artikel
   instructions_only: "Weisung (nur auf dokumentierte Weisung)",
   confidentiality: "Vertraulichkeit",
   security_TOMs: "Technisch-organisatorische Maßnahmen",
@@ -44,7 +47,6 @@ const ACTION_CATEGORY_DE: Record<string, string> = {
   breach_support: "Unterstützung bei Datenschutzverletzungen",
   deletion_return: "Löschung/Rückgabe nach Vertragsende",
   audit_rights: "Audit- und Nachweisrechte",
-  // Zusatzklauseln
   international_transfers: "Internationale Übermittlungen",
   liability_cap: "Haftungsregel/Haftungsbegrenzung",
   jurisdiction: "Gerichtsstand/Rechtswahl",
@@ -64,12 +66,10 @@ function labelForCategory(key: string) {
   return ACTION_CATEGORY_DE[key] ?? key.replace(/_/g, " ");
 }
 
-/** ========= Normalisierung ========= */
+/* ---------- Normalisierung (robust gegen alle Varianten) ---------- */
 function normalize(input: any) {
-  // Executive Summary
-  const executiveSummary: string = input?.executive_summary ?? "";
+  const executiveSummary: string = (input?.executive_summary ?? "").toString();
 
-  // Metadata (Titel/Datum)
   const meta =
     input?.vertrag_metadata ??
     (input?.contract_metadata
@@ -79,118 +79,100 @@ function normalize(input: any) {
         }
       : { titel: "", datum: "" });
 
-  // Parteien – Variante A: contract_metadata.parties (Array)
-  const partiesA =
-    input?.contract_metadata?.parties?.map((p: any) => ({
-      rolle:
-        p?.role === "controller"
-          ? "Verantwortlicher"
-          : p?.role === "processor"
-          ? "Auftragsverarbeiter"
-          : p?.role || "",
-      name: p?.name || "",
-      land: p?.country || "",
-    })) ?? [];
+  // Parteien – A: contract_metadata.parties[]
+  const partiesA = toArray<any>(input?.contract_metadata?.parties).map((p) => ({
+    rolle:
+      p?.role === "controller"
+        ? "Verantwortlicher"
+        : p?.role === "processor"
+        ? "Auftragsverarbeiter"
+        : (p?.role ?? ""),
+    name: p?.name ?? "",
+    land: p?.country ?? "",
+  }));
 
-  // Parteien – Variante B: parties (Objekt mit controller/processor/processor_dpo)
+  // Parteien – B: eigenes Objekt {controller, processor, processor_dpo}
   const partiesB: { rolle: string; name: string; land?: string }[] = [];
-  if (input?.parties && typeof input.parties === "object") {
+  if (input?.parties && typeof input.parties === "object" && !Array.isArray(input.parties)) {
     const p = input.parties;
-    if (p.controller)
-      partiesB.push({ rolle: "Verantwortlicher", name: String(p.controller) });
-    if (p.processor)
-      partiesB.push({ rolle: "Auftragsverarbeiter", name: String(p.processor) });
-    if (p.processor_dpo)
-      partiesB.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(p.processor_dpo) });
+    if (p.controller) partiesB.push({ rolle: "Verantwortlicher", name: String(p.controller) });
+    if (p.processor) partiesB.push({ rolle: "Auftragsverarbeiter", name: String(p.processor) });
+    if (p.processor_dpo) partiesB.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(p.processor_dpo) });
   }
-
   const parties = [...partiesA, ...partiesB];
 
   // Art. 28
   const a28src = input?.prüfung?.art_28 ?? input?.findings?.art_28 ?? input?.article_28_analysis ?? {};
   const a28: Record<string, { status?: string; belege: Evidence[] }> = {};
-  // Deutsch-Kanon zuerst
-  for (const k of Object.keys(ART28_LABELS)) {
-    const node = a28src[k];
-    if (node) {
+  // Deutsch-Kanon → direkt
+  Object.keys(ART28_LABELS).forEach((k) => {
+    const node = a28src?.[k];
+    if (node && typeof node === "object") {
       a28[k] = {
         status: mapStatus(node.status) ?? node.status,
-        belege: (node.belege ?? node.evidence ?? []) as Evidence[],
+        belege: toArray<Evidence>(node.belege ?? node.evidence),
       };
     }
-  }
+  });
   // Englisch → Kanon
-  for (const k of Object.keys(a28src)) {
+  Object.keys(a28src || {}).forEach((k) => {
     const canon = EN_TO_CANON[k];
     if (canon && !a28[canon]) {
       const node = a28src[k];
-      a28[canon] = {
-        status: mapStatus(node?.status) ?? node?.status,
-        belege: (node?.evidence ?? node?.belege ?? []) as Evidence[],
-      };
+      if (node && typeof node === "object") {
+        a28[canon] = {
+          status: mapStatus(node.status) ?? node.status,
+          belege: toArray<Evidence>(node.evidence ?? node.belege),
+        };
+      }
     }
-  }
+  });
 
   // Zusatzklauseln
-  const extrasSrc =
-    input?.prüfung?.zusatzklauseln ?? input?.findings?.additional_clauses ?? input?.additional_clauses ?? {};
+  const extrasSrc = input?.prüfung?.zusatzklauseln ?? input?.findings?.additional_clauses ?? input?.additional_clauses ?? {};
   const extrasMap = {
     internationale_übermittlungen: extrasSrc?.internationale_übermittlungen ?? extrasSrc?.international_transfers,
     haftungsbegrenzung: extrasSrc?.haftungsbegrenzung ?? extrasSrc?.liability_cap,
     gerichtsstand_recht: extrasSrc?.gerichtsstand_recht ?? extrasSrc?.jurisdiction,
   };
   const extras: Record<string, { status?: string; belege: Evidence[] }> = {};
-  for (const [k, v] of Object.entries(extrasMap)) {
-    if (!v) continue;
-    extras[k] = {
-      status: mapStatus((v as any).status) ?? (v as any).status,
-      belege: ((v as any).belege ?? (v as any).evidence ?? []) as Evidence[],
-    };
-  }
+  Object.entries(extrasMap).forEach(([k, v]) => {
+    if (v && typeof v === "object") {
+      extras[k] = {
+        status: mapStatus((v as any).status) ?? (v as any).status,
+        belege: toArray<Evidence>((v as any).belege ?? (v as any).evidence),
+      };
+    }
+  });
 
-  // Scores & rationale
+  // Scores
   const riskOverall =
-    typeof input?.risiko_score?.gesamt === "number"
-      ? input.risiko_score.gesamt
-      : typeof input?.risk_score?.overall === "number"
-      ? input.risk_score.overall
-      : null;
-  const riskRationale = input?.risk_rationale ?? input?.risk_score?.rationale ?? "";
+    isNum(input?.risiko_score?.gesamt) ? input.risiko_score.gesamt :
+    isNum(input?.risk_score?.overall) ? input.risk_score.overall : null;
 
-  const actions: any[] =
-    input?.recommended_actions ??
-    input?.actions ??
-    [];
+  const riskRationale = (input?.risk_rationale ?? input?.risk_score?.rationale ?? "").toString();
 
-  return {
-    executiveSummary,
-    meta,
-    parties,
-    a28,
-    extras,
-    riskOverall,
-    riskRationale,
-    actions,
-    raw: input,
-  };
+  const actions = toArray<any>(input?.recommended_actions ?? input?.actions);
+
+  return { executiveSummary, meta, parties, a28, extras, riskOverall, riskRationale, actions, raw: input };
 }
 
-
-/** ========= Komponente ========= */
+/* ---------- Komponente ---------- */
 export default function Page() {
   const [raw, setRaw] = useState<any>(null);
   const [data, setData] = useState<ReturnType<typeof normalize> | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [showRaw, setShowRaw] = useState(false);
   const [inputKey, setInputKey] = useState(0);
+  const [showRaw, setShowRaw] = useState(false);
+
   const chartRef = useRef<HTMLCanvasElement | null>(null);
   const chartInst = useRef<any>(null);
 
-  // KPIs aus Matrix
+  /* ---- KPIs ---- */
   const kpis = useMemo(() => {
     const src = data?.a28 ?? {};
-    const statuses = Object.values(src).map((x) => x?.status || "");
+    const statuses = Object.values(src).map((x: any) => x?.status || "");
     const erfüllt = statuses.filter((s) => s === "erfüllt").length;
     const teilweise = statuses.filter((s) => s === "teilweise").length;
     const fehlt = statuses.filter((s) => s === "fehlt").length;
@@ -198,7 +180,7 @@ export default function Page() {
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
   }, [data]);
 
-  // Compliance aus Matrix (+leichter Bonus für Zusatzklauseln)
+  /* ---- Compliance/Risk ---- */
   const complianceMatrix = useMemo(() => {
     if (!kpis.any) return null;
     const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
@@ -219,76 +201,62 @@ export default function Page() {
     return Math.max(0, Math.min(100, Math.round(score)));
   }, [kpis, data?.extras]);
 
-  // Falls ein „overall“ vom Backend eigentlich Compliance ist, erkennen:
-  const agentOverall: number | null =
-    typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : null;
-
-  const rationaleText = (data?.riskRationale || "").toString().toLowerCase();
-  const POSITIVE_TOKENS = ["wesentlichen anforderungen", "weitgehend erfüllt", "konform", "erfüllt", "entspricht art. 28"];
-  const mentionsPositive = POSITIVE_TOKENS.some((t) => rationaleText.includes(t));
+  // Falls Backend "overall" eigentlich ein Compliance-Score ist:
+  const agentOverall: number | null = isNum(raw?.risk_score?.overall) ? raw.risk_score.overall : null;
+  const rationaleText = (data?.riskRationale || "").toLowerCase();
+  const mentionsPositive = ["wesentlichen anforderungen", "weitgehend erfüllt", "konform", "erfüllt", "entspricht art. 28"]
+    .some((t) => rationaleText.includes(t));
   const isLikelyComplianceScore = agentOverall != null && agentOverall >= 60 && mentionsPositive;
 
   const compliance = isLikelyComplianceScore ? agentOverall : complianceMatrix;
   const risk = isLikelyComplianceScore
-    ? (compliance != null ? Math.max(0, 100 - compliance) : null)
-    : (typeof data?.riskOverall === "number"
-        ? data.riskOverall
-        : (agentOverall != null ? agentOverall : (compliance != null ? Math.max(0, 100 - compliance) : null)));
+    ? (compliance != null ? Math.max(0, 100 - (compliance as number)) : null)
+    : (isNum(data?.riskOverall) ? (data!.riskOverall as number)
+       : (agentOverall != null ? agentOverall : (compliance != null ? Math.max(0, 100 - (compliance as number)) : null)));
 
-  const compColor =
-    compliance == null ? "text-secondary" : compliance >= 85 ? "text-success" : compliance >= 70 ? "text-warning" : "text-danger";
-  const riskColor =
-    risk == null ? "text-secondary" : risk <= 20 ? "text-success" : risk <= 40 ? "text-warning" : "text-danger";
+  const compColor = compliance == null ? "text-secondary" : compliance >= 85 ? "text-success" : compliance >= 70 ? "text-warning" : "text-danger";
+  const riskColor = risk == null ? "text-secondary" : risk <= 20 ? "text-success" : risk <= 40 ? "text-warning" : "text-danger";
+  const compLabel = compliance == null ? "—" : compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht";
+  const riskLabel = risk == null ? "—" : risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch";
 
-  const compLabel =
-    compliance == null ? "—" : compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht";
-  const riskLabel =
-    risk == null ? "—" : risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch";
-
-  // Doughnut
-  const donut = useMemo(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
+  /* ---- Chart stabilisieren ---- */
+  const donut = useMemo<number[]>(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
   useEffect(() => {
-    console.log("Chart data:", { donut, data, kpis });
-    
-  const Chart = (window as any).Chart as any;
-  if (!Chart || !chartRef.current) return;
+    const Chart = (window as any).Chart as any;
+    if (!Chart || !chartRef.current) return;
 
-  // destroy any existing chart
-  if (chartInst.current) {
-    chartInst.current.destroy();
-    chartInst.current = null;
-  }
+    if (chartInst.current) {
+      try { chartInst.current.destroy(); } catch {}
+      chartInst.current = null;
+    }
 
-  // Sicherheitscheck: sind Daten vorhanden?
-  if (!data || !kpis.any || !Array.isArray(donut) || donut.length !== 3) return;
+    if (!data || !kpis.any || !Array.isArray(donut) || donut.length !== 3) return;
 
-  chartInst.current = new Chart(chartRef.current, {
-    type: "doughnut",
-    data: {
-      labels: Array.isArray(["erfüllt", "teilweise", "fehlt"])
-        ? ["erfüllt", "teilweise", "fehlt"]
-        : [],
-      datasets: [
-        {
-          data: Array.isArray(donut) ? donut : [0, 0, 0],
-          backgroundColor: ["#16a34a", "#f59e0b", "#ef4444"],
-          borderColor: "#0b0e14",
-          borderWidth: 2,
-          hoverOffset: 6,
-        },
-      ],
-    },
-    options: {
-      plugins: {
-        legend: { position: "bottom", labels: { color: "#f1f4fa" } },
-        tooltip: { enabled: true },
+    chartInst.current = new Chart(chartRef.current, {
+      type: "doughnut",
+      data: {
+        labels: ["erfüllt", "teilweise", "fehlt"],
+        datasets: [
+          {
+            data: donut,
+            backgroundColor: ["#16a34a", "#f59e0b", "#ef4444"],
+            borderColor: "#0b0e14",
+            borderWidth: 2,
+            hoverOffset: 6,
+          },
+        ],
       },
-      cutout: "65%",
-    },
-  });
-}, [donut, data, kpis.any]);
+      options: {
+        plugins: {
+          legend: { position: "bottom", labels: { color: "#f1f4fa" } },
+          tooltip: { enabled: true },
+        },
+        cutout: "65%",
+      },
+    });
+  }, [donut, data, kpis.any]);
 
-  // Upload Handler
+  /* ---- Upload ---- */
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -298,23 +266,27 @@ export default function Page() {
       const body = new FormData();
       body.append("file", file);
       const res = await fetch("/api/agent-avv", { method: "POST", body });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "API error");
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = (json?.details || json?.error || res.statusText || "Unbekannter Fehler").toString();
+        throw new Error(detail);
+      }
       setRaw(json);
       setData(normalize(json));
     } catch (e: any) {
-      setErr(e.message);
+      // zeigt die echte Fehlermeldung aus der Route an
+      setErr(String(e?.message || e));
       setRaw(null);
       setData(null);
     } finally {
       setLoading(false);
-      e.target.value = "";
+      if (e.target) e.target.value = "";
       setInputKey((k) => k + 1);
     }
   };
 
   const renderEvidence = (ev?: Evidence[]) =>
-    (ev || []).map((e) => `S.${e.page ?? "?"}: „${(e.quote || "").slice(0, 140)}…“`).join(" • ");
+    toArray<Evidence>(ev).map((e) => `S.${e.page ?? "?"}: „${(e.quote || "").slice(0, 140)}…“`).join(" • ");
 
   const badge = (s?: string) => {
     if (s === "erfüllt") return <span className="badge" style={{ background: "#14532d" }}>erfüllt</span>;
@@ -361,7 +333,9 @@ export default function Page() {
               <div className="card p-3" style={{ minWidth: 200 }}>
                 <div className="muted">Compliance</div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
-                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>{compLabel}</div>
+                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
+                  {compliance == null ? "—" : (compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht")}
+                </div>
                 {compliance == null ? (
                   <div className="mt-1 small muted">No data</div>
                 ) : (
@@ -375,7 +349,9 @@ export default function Page() {
               <div className="card p-3" style={{ minWidth: 200 }}>
                 <div className="muted">Risiko</div>
                 <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
-                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>{riskLabel}</div>
+                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
+                  {risk == null ? "—" : (risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch")}
+                </div>
                 {risk == null ? (
                   <div className="mt-1 small muted">No data</div>
                 ) : (
@@ -432,11 +408,11 @@ export default function Page() {
             </div>
             <div className="col-md-6">
               <div className="muted">Parteien</div>
-              {!data || (data.parties ?? []).length === 0 ? (
+              {!data || toArray(data.parties).length === 0 ? (
                 <div className="muted">—</div>
               ) : (
                 <ul className="mb-0">
-                  {data.parties.map((p: any, i: number) => (
+                  {toArray<any>(data.parties).map((p, i) => (
                     <li key={i} className="text-white">
                       {p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}
                     </li>
@@ -466,8 +442,8 @@ export default function Page() {
                 </thead>
                 <tbody>
                   {Object.entries(ART28_LABELS).map(([canon, label]) => {
-                    const f = data?.a28?.[canon] as { status?: string; belege?: Evidence[] } | undefined;
-                    const belege = f?.belege ?? [];
+                    const f = (data?.a28 ?? ({} as any))[canon] as { status?: string; belege?: Evidence[] } | undefined;
+                    const belege = toArray<Evidence>(f?.belege);
                     return (
                       <tr key={canon}>
                         <td className="fw-semibold">{label}</td>
@@ -508,11 +484,11 @@ export default function Page() {
                         ? "Haftungsbegrenzung"
                         : "Gerichtsstand/Recht";
                     const f = (data?.extras as any)?.[k] ?? {};
-                    const belege = (f as any).belege ?? [];
+                    const belege = toArray<Evidence>(f?.belege);
                     return (
                       <tr key={k}>
                         <td className="fw-semibold">{label}</td>
-                        <td>{badge((f as any).status)}</td>
+                        <td>{badge(f?.status)}</td>
                         <td className="text-break">{renderEvidence(belege) || "—"}</td>
                       </tr>
                     );
@@ -530,11 +506,11 @@ export default function Page() {
           <h2 className="h6 mb-3">Empfohlene Maßnahmen</h2>
           {!data ? (
             <div className="muted">Noch keine Daten</div>
-          ) : (data?.actions || []).length === 0 ? (
+          ) : toArray(data.actions).length === 0 ? (
             <div className="muted">—</div>
           ) : (
             <div className="list-group">
-              {(data?.actions || []).map((a: any, i: number) => {
+              {toArray<any>(data.actions).map((a, i) => {
                 const sev = a.severity === "high" ? "danger" : a.severity === "medium" ? "warning" : "info";
                 const heading = labelForCategory(a.category || a.issue || "");
                 const detail = a.suggested_clause ?? a.action ?? "";

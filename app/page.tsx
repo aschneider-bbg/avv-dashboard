@@ -2,15 +2,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * AVV Dashboard (beide Schemas werden unterstützt)
- * - Agent-Builder: { contract_metadata, findings{art_28, additional_clauses}, risk_score, actions }
- * - Altes Schema:  { vertrag_metadata, prüfung{art_28, zusatzklauseln}, risiko_score/risk_score, actions }
- * Wir normalisieren alles auf ein internes, deutsches Modell.
+ * AVV Dashboard – robust gegen mehrere JSON-Varianten
+ * - Agent-Builder klassisch: { executive_summary, contract_metadata{title,date,parties[]}, findings{art_28, additional_clauses}, compliance_score, risk_score, actions }
+ * - Merge/Alt:            : { article_28_analysis, additional_clauses, parties:{...}, recommended_actions, compliance_score{details,bonus,penalties} }
  */
 
 type Evidence = { quote: string; page?: number };
-type Clause = { status?: string; belege?: Evidence[]; evidence?: Evidence[] };
 
+// UI-Labels (kanonisch, DE)
 const ART28_LABELS: Record<string, string> = {
   weisung: "Weisung",
   vertraulichkeit: "Vertraulichkeit",
@@ -22,6 +21,7 @@ const ART28_LABELS: Record<string, string> = {
   audit_nachweis: "Audit/Nachweis",
 };
 
+// Mapping EN → DE (kanonische Keys)
 const EN_TO_CANON: Record<string, keyof typeof ART28_LABELS> = {
   instructions_only: "weisung",
   confidentiality: "vertraulichkeit",
@@ -33,6 +33,7 @@ const EN_TO_CANON: Record<string, keyof typeof ART28_LABELS> = {
   audit_rights: "audit_nachweis",
 };
 
+// Status Mapping
 const STATUS_EN_TO_DE: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden" | "nicht gefunden"> = {
   met: "erfüllt",
   partial: "teilweise",
@@ -53,30 +54,55 @@ function mapStatus(v?: string) {
 
 /** Normalisiert beliebige API-Antwort in ein gemeinsames deutsches Objekt */
 function normalize(input: any) {
-  // Metadata
+  // ---- Executive Summary
+  const execSummary: string =
+    (typeof input?.executive_summary === "string" && input.executive_summary.trim()) || "";
+
+  // ---- Parteien: Array-Variante (klassisch) ODER Objekt-Variante (neu)
+  let parteien: Array<{ rolle: string; name: string; land?: string }> = [];
+  if (Array.isArray(input?.contract_metadata?.parties)) {
+    parteien = (input.contract_metadata.parties as any[]).map((p) => ({
+      rolle:
+        p?.role === "controller"
+          ? "Verantwortlicher"
+          : p?.role === "processor"
+          ? "Auftragsverarbeiter"
+          : p?.role ?? "",
+      name: p?.name ?? "",
+      land: p?.country ?? "",
+    }));
+  } else if (input?.parties && typeof input.parties === "object") {
+    const p = input.parties;
+    if (p.controller) parteien.push({ rolle: "Verantwortlicher", name: String(p.controller), land: "" });
+    if (p.processor) parteien.push({ rolle: "Auftragsverarbeiter", name: String(p.processor), land: "" });
+    if (p.processor_dpo)
+      parteien.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(p.processor_dpo), land: "" });
+  }
+
+  // ---- Metadata
   const meta =
     input?.vertrag_metadata ??
     (input?.contract_metadata
       ? {
           titel: input.contract_metadata.title ?? "",
           datum: input.contract_metadata.date ?? "",
-          parteien: (input.contract_metadata.parties ?? []).map((p: any) => ({
-            rolle:
-              p.role === "controller"
-                ? "Verantwortlicher"
-                : p.role === "processor"
-                ? "Auftragsverarbeiter"
-                : p.role ?? "",
-            name: p.name ?? "",
-            land: p.country ?? "",
-          })),
+          parteien,
         }
-      : {});
+      : {
+          titel: input?.contract_metadata?.title || "",
+          datum: input?.contract_metadata?.date || "",
+          parteien,
+        });
 
-  // Art. 28
-  const a28src = input?.prüfung?.art_28 ?? input?.findings?.art_28 ?? {};
+  // ---- Art. 28: akzeptiere mehrere Pfade
+  const a28src =
+    input?.prüfung?.art_28 ??
+    input?.findings?.art_28 ??
+    input?.article_28_analysis ??
+    {};
+
   const a28: Record<string, { status?: string; belege: Evidence[] }> = {};
-  // Deutsch direkt übernehmen
+  // deutsch direkt übernehmen
   for (const k of Object.keys(ART28_LABELS)) {
     const node = a28src[k];
     if (node) {
@@ -86,53 +112,93 @@ function normalize(input: any) {
       };
     }
   }
-  // Englisch -> Kanon
+  // englisch → kanonisch
   for (const k of Object.keys(a28src)) {
     const canon = EN_TO_CANON[k];
-    if (canon && !a28[canon]) {
+    if (canon) {
       const node = a28src[k];
-      a28[canon] = {
-        status: mapStatus(node?.status) ?? node?.status,
-        belege: (node?.evidence ?? node?.belege ?? []) as Evidence[],
-      };
+      if (!a28[canon]) {
+        a28[canon] = {
+          status: mapStatus(node?.status) ?? node?.status,
+          belege: (node?.evidence ?? node?.belege ?? []) as Evidence[],
+        };
+      }
     }
   }
 
-  // Zusatzklauseln
-  const extrasSrc = input?.prüfung?.zusatzklauseln ?? input?.findings?.additional_clauses ?? {};
-  const extras = {
-    internationale_übermittlungen: extrasSrc?.internationale_übermittlungen ?? extrasSrc?.international_transfers,
-    haftungsbegrenzung: extrasSrc?.haftungsbegrenzung ?? extrasSrc?.liability_cap,
-    gerichtsstand_recht: extrasSrc?.gerichtsstand_recht ?? extrasSrc?.jurisdiction,
+  // ---- Zusatzklauseln (beide Schemata)
+  const extrasSrc =
+    input?.prüfung?.zusatzklauseln ??
+    input?.findings?.additional_clauses ??
+    input?.additional_clauses ??
+    {};
+  const extrasMap = {
+    internationale_übermittlungen:
+      (extrasSrc as any)?.internationale_übermittlungen ?? (extrasSrc as any)?.international_transfers,
+    haftungsbegrenzung: (extrasSrc as any)?.haftungsbegrenzung ?? (extrasSrc as any)?.liability_cap,
+    gerichtsstand_recht: (extrasSrc as any)?.gerichtsstand_recht ?? (extrasSrc as any)?.jurisdiction,
   };
-  const extrasNorm: Record<string, { status?: string; belege: Evidence[] }> = {};
-  for (const [k, v] of Object.entries(extras)) {
+  const extras: Record<string, { status?: string; belege: Evidence[] }> = {};
+  for (const [k, v] of Object.entries(extrasMap)) {
     if (!v) continue;
-    extrasNorm[k] = {
+    extras[k] = {
       status: mapStatus((v as any).status) ?? (v as any).status,
       belege: ((v as any).belege ?? (v as any).evidence ?? []) as Evidence[],
     };
   }
 
-  // Scores & rationale
-  const riskOverall =
-    typeof input?.risiko_score?.gesamt === "number"
-      ? input.risiko_score.gesamt
-      : typeof input?.risk_score?.overall === "number"
-      ? input.risk_score.overall
-      : null;
-  const riskRationale = input?.risk_rationale ?? input?.risk_score?.rationale ?? "";
+  // ---- Scores & Rationales
+  const compOverall =
+    typeof input?.compliance_score?.overall === "number" ? input.compliance_score.overall : null;
+  const compRationale = (input?.compliance_score?.rationale ?? "").toString();
+  const compDetails = input?.compliance_score?.details || null;
+  const compBonus = typeof input?.compliance_score?.bonus === "number" ? input.compliance_score.bonus : null;
+  const compPenalties =
+    typeof input?.compliance_score?.penalties === "number" ? input.compliance_score.penalties : null;
 
-  const actions: any[] = input?.actions ?? [];
+  const riskOverall =
+    typeof input?.risk_score?.overall === "number"
+      ? input.risk_score.overall
+      : typeof input?.risiko_score?.gesamt === "number"
+      ? input.risiko_score.gesamt
+      : null;
+  const riskRationale = (input?.risk_score?.rationale ?? input?.risk_rationale ?? "").toString();
+
+  // ---- Actions
+  // alt: actions = [{severity, issue, suggested_clause, rationale?}]
+  // neu: recommended_actions = [{category, severity, action}]
+  const actions: Array<{ severity: "high" | "medium" | "low"; issue: string; suggested_clause: string; rationale?: string }> =
+    Array.isArray(input?.actions)
+      ? input.actions
+      : Array.isArray(input?.recommended_actions)
+      ? input.recommended_actions.map((a: any) => ({
+          severity: (a.severity || "medium") as "high" | "medium" | "low",
+          issue: a.category || "action",
+          suggested_clause: a.action || "",
+          rationale: "",
+        }))
+      : [];
 
   return {
+    execSummary,
     meta,
     a28,
-    extras: extrasNorm,
+    extras,
+    compOverall,
+    compRationale,
+    compDetails,
+    compBonus,
+    compPenalties,
     riskOverall,
     riskRationale,
     actions,
+    raw: input,
   };
+}
+
+/** ======== Chart Utils ======== */
+function estimateTokens(s: string): number {
+  return Math.ceil((s || "").length / 4);
 }
 
 export default function Page() {
@@ -157,8 +223,7 @@ export default function Page() {
   }, [data]);
 
   // ---- Compliance & Risiko ----
-
-  // 1) Compliance aus Matrix berechnen + leichte Gewichtung der Zusatzklauseln
+  // 1) Compliance aus Matrix (Fallback)
   const complianceMatrix = useMemo(() => {
     if (!kpis.any) return null;
     const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
@@ -179,42 +244,16 @@ export default function Page() {
     return Math.max(0, Math.min(100, Math.round(score)));
   }, [kpis, data?.extras]);
 
-  // 2) Agent-Output (manchmal "risk_score.overall" als POSITIVER Score = Compliance)
-  const agentOverall: number | null =
-    typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : null;
-
-  const rationaleText = (raw?.risk_score?.rationale || data?.riskRationale || "").toString().toLowerCase();
-  const POSITIVE_TOKENS = [
-    "wesentlichen anforderungen",
-    "anforderungen abgedeckt",
-    "weitgehend erfüllt",
-    "erfüllt",
-    "konform",
-    "entspricht art. 28",
-  ];
-  const mentionsPositive = POSITIVE_TOKENS.some((t) => rationaleText.includes(t));
-
-  const isLikelyComplianceScore =
-    agentOverall != null &&
-    (agentOverall >= 60 || mentionsPositive) &&
-    mentionsPositive;
+  // 2) Wenn der Agent eine explizite Compliance liefert, nutze die
+  const explicitCompliance =
+    typeof raw?.compliance_score?.overall === "number" ? raw.compliance_score.overall : data?.compOverall ?? null;
 
   // 3) Finale Compliance
-  const compliance = isLikelyComplianceScore ? agentOverall : complianceMatrix;
+  const compliance = explicitCompliance ?? complianceMatrix;
 
   // 4) Finale Risiko
-  // WICHTIGER FIX: Wenn der Agent-Wert als Compliance interpretiert wurde,
-  // ignorieren wir jeden serverseitigen Risiko-Wert und leiten Risiko IMMER invers ab.
-  const risk =
-    isLikelyComplianceScore
-      ? (compliance != null ? Math.max(0, 100 - compliance) : null)
-      : (
-          // sonst: echter Risiko-Score aus normalisiertem Modell
-          (typeof data?.riskOverall === "number"
-            ? data.riskOverall
-            // oder – wenn Agent-Wert wirklich Risiko sein sollte – nutze diesen
-            : (agentOverall != null ? agentOverall : (compliance != null ? Math.max(0, 100 - compliance) : null)))
-        );
+  const explicitRisk = typeof data?.riskOverall === "number" ? data.riskOverall : null;
+  const risk = explicitRisk ?? (compliance != null ? Math.max(0, 100 - compliance) : null);
 
   // Ampellogik
   const compColor =
@@ -274,7 +313,6 @@ export default function Page() {
     try {
       const body = new FormData();
       body.append("file", file);
-      // WICHTIG: Agent-Route verwenden
       const res = await fetch("/api/agent-avv", { method: "POST", body });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "API error");
@@ -302,8 +340,6 @@ export default function Page() {
     if (s === "nicht gefunden") return <span className="badge bg-secondary">nicht gefunden</span>;
     return <span className="badge bg-secondary">—</span>;
   };
-
-  const rationale = data?.riskRationale || "—";
 
   return (
     <div className="container py-4">
@@ -363,7 +399,7 @@ export default function Page() {
                 )}
               </div>
 
-              {/* Rote Warnzeile bei schlechtem Ergebnis */}
+              {/* Warnzeile */}
               {(compliance != null && compliance < 60) || (risk != null && risk > 60) ? (
                 <div className="w-100 mt-3 text-danger d-flex align-items-center" style={{ gap: 8 }}>
                   <i className="bi bi-exclamation-triangle-fill"></i>
@@ -371,7 +407,7 @@ export default function Page() {
                 </div>
               ) : null}
 
-              {/* Vertragsinformationen */}
+              {/* Vertragsinformationen kompakt */}
               <div className="card p-3" style={{ minWidth: 240 }}>
                 <div className="muted">Vertrags­informationen</div>
                 <div className="fw-semibold">{data?.meta?.titel || "—"}</div>
@@ -382,7 +418,7 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Chart + Summary */}
+      {/* Chart + Executive Summary */}
       <div className="row g-3 mb-4">
         <div className="col-lg-5">
           <div className="card h-100">
@@ -401,7 +437,40 @@ export default function Page() {
           <div className="card h-100">
             <div className="card-body">
               <h2 className="h6 mb-2">Executive Summary</h2>
-              <p className="mb-0" style={{ color: "var(--text)" }}>{data?.riskRationale || "—"}</p>
+              <p className="mb-0" style={{ color: "var(--text)" }}>{data?.execSummary || "—"}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Scoring-Details */}
+      <div className="card mb-4">
+        <div className="card-body">
+          <h2 className="h6 mb-2">Scoring-Details</h2>
+          <div className="row">
+            <div className="col-md-6 mb-3">
+              <div className="muted mb-1">Begründung Compliance</div>
+              <div className="text-white">{data?.compRationale || "—"}</div>
+              {(data?.compBonus != null || data?.compPenalties != null) && (
+                <div className="small mt-2" style={{ color: "#9aa3b2" }}>
+                  {data?.compBonus != null && <>Bonus: +{data.compBonus}&nbsp;&nbsp;</>}
+                  {data?.compPenalties != null && <>Abzüge: −{data.compPenalties}</>}
+                </div>
+              )}
+              {data?.compDetails && (
+                <div className="mt-3">
+                  <div className="muted mb-1">Detailpunkte</div>
+                  <ul className="mb-0 small" style={{ color: "#d5d9e3" }}>
+                    {Object.entries(data.compDetails).map(([k, v]) => (
+                      <li key={k}>{k}: {String(v)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <div className="col-md-6">
+              <div className="muted mb-1">Begründung Risiko</div>
+              <div className="text-white">{data?.riskRationale || "—"}</div>
             </div>
           </div>
         </div>
@@ -422,19 +491,7 @@ export default function Page() {
                 <div className="muted">—</div>
               ) : (
                 <ul className="mb-0">
-                  {(raw?.vertrag_metadata?.parteien ??
-                    raw?.contract_metadata?.parties?.map((p: any) => ({
-                      rolle:
-                        p.role === "controller"
-                          ? "Verantwortlicher"
-                          : p.role === "processor"
-                          ? "Auftragsverarbeiter"
-                          : p.role ?? "",
-                      name: p.name,
-                      land: p.country,
-                    })) ??
-                    []
-                  ).map((p: any, i: number) => (
+                  {(data?.meta?.parteien ?? []).map((p: any, i: number) => (
                     <li key={i} className="text-white">
                       {p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}
                     </li>
@@ -522,18 +579,17 @@ export default function Page() {
         </div>
       </div>
 
-
       {/* Maßnahmen */}
       <div className="card mb-4">
         <div className="card-body">
           <h2 className="h6 mb-3">Empfohlene Maßnahmen</h2>
           {!data ? (
             <div className="muted">Noch keine Daten</div>
-          ) : (raw?.actions || []).length === 0 ? (
+          ) : (data?.actions || []).length === 0 ? (
             <div className="muted">—</div>
           ) : (
             <div className="list-group">
-              {(raw?.actions || []).map((a: any, i: number) => {
+              {(data?.actions || []).map((a: any, i: number) => {
                 const sev = a.severity === "high" ? "danger" : a.severity === "medium" ? "warning" : "info";
                 return (
                   <div

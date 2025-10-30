@@ -294,16 +294,7 @@ Zusatzregeln
 • parties.role = Original oder normiert (controller ↔ Verantwortlicher, processor ↔ Auftragsverarbeiter).  
 • Wenn Land nicht ermittelbar, verwende den ISO-Code des anderen Vertragspartners oder "DE".  
 • Unsichere Fälle → status = "partial" und Begründung in risk_score.rationale vermerken.  
-• Keine Meta-Kommentare, keine Redundanzen.
-
-
-Wenn Benutzer Dateien hochladen, speichere und indiziere sie automatisch im Vector Store „avv-files“. 
-Verwende anschließend die File Search API, um relevante Passagen aus diesen Dateien zu analysieren. 
-Falls File Search keine Ergebnisse liefert, analysiere stattdessen direkt den Volltext.
-
-Bevor du mit der Analyse beginnst, prüfe, ob der Vector Store „avv-files“ aktiv ist 
-und ob mindestens eine Datei eingebettet ist (Size > 0). 
-Wenn nicht, analysiere die neu hochgeladene Datei direkt und füge sie anschließend in den Store ein.`,
+• Keine Meta-Kommentare, keine Redundanzen.`,
   model: "gpt-5-chat-latest",
   modelSettings: { temperature: 0.2, maxTokens: 4000, topP: 1, store: false },
 });

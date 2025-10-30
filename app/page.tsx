@@ -99,7 +99,24 @@ function normalize(input: any) {
     if (p.processor) partiesB.push({ rolle: "Auftragsverarbeiter", name: String(p.processor) });
     if (p.processor_dpo) partiesB.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(p.processor_dpo) });
   }
-  const parties = [...partiesA, ...partiesB];
+ 
+  // Parteien – C: contract_metadata.parties als Objekt {controller, processor, country, processor_dpo}
+  const partiesC: { rolle: string; name: string; land?: string }[] = [];
+  const pc = input?.contract_metadata?.parties;
+  if (pc && typeof pc === "object" && !Array.isArray(pc)) {
+    if (pc.controller) {
+      partiesC.push({ rolle: "Verantwortlicher", name: String(pc.controller) });
+    }
+    if (pc.processor) {
+      const land = pc.country || pc.processor_country || "";
+      partiesC.push({ rolle: "Auftragsverarbeiter", name: String(pc.processor), land });
+    }
+    if (pc.processor_dpo) {
+      partiesC.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(pc.processor_dpo) });
+    }
+  }
+
+  const parties = [...partiesA, ...partiesB, ...partiesC];
 
   // Art. 28
   const a28src = input?.prüfung?.art_28 ?? input?.findings?.art_28 ?? input?.article_28_analysis ?? {};

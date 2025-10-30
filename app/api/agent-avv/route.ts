@@ -5,57 +5,80 @@ import pdf from "pdf-parse";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** ========= PDF → Text ========= */
+/** ========= PDF → Text  ========= */
 async function pdfToText(file: File): Promise<string> {
   const buf = Buffer.from(await file.arrayBuffer());
   const data = await pdf(buf).catch(() => null);
   if (!data || !data.text?.trim()) throw new Error("PDF-Text leer oder nicht lesbar.");
-  return data.text
+  // leichte Normalisierung
+  let text = data.text
     .replace(/\u0000/g, "")
     .replace(/\r/g, "\n")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  return text;
 }
 
-/** ========= Token-Schätzung ========= */
+/** ========= Token-Schätzung (grob) =========
+ * GPT-5/4.1 grob ~ 4 Zeichen pro Token. Wir arbeiten mit Zeichenlimits. */
 function estimateTokens(s: string): number {
   return Math.ceil(s.length / 4);
 }
 
-/** ========= Semantisches Chunking ========= */
+/** ========= Semantischer Chunker =========
+ * - Split nach starken Grenzen (Überschriften, Artikel/Paragraphen, Anhang)
+ * - Dann nach Absätzen
+ * - Chunk-Zusammenbau bis targetTokens, Hard-Cap bei hardMaxTokens
+ */
 function semanticChunkText(
   text: string,
-  targetTokens = 8_000,
-  hardMaxTokens = 9_500
+  targetTokens = 8_000,   // ≈ 32k Zeichen
+  hardMaxTokens = 9_500   // ≈ 38k Zeichen, knapp unterm 10k-Block
 ): string[] {
   const strongDelim = new RegExp(
     [
+      // Deutsche Überschriften/Strukturmarker
       String.raw`(?=^.{0,6}(?:Kapitel|Abschnitt|Artikel|Art\.|§|Ziffer|Anhang)\b)`,
+      // Nummerierte Hauptpunkte
       String.raw`(?=^\s*(?:[IVXLC]+\.)\s)`,
       String.raw`(?=^\s*(?:\d{1,2}\.)\s)`,
+      // fette/trennzeilenartige Überschriften
       String.raw`(?=^\s*[A-ZÄÖÜ][A-ZÄÖÜ \-/]{5,}\s*$)`,
     ].join("|"),
     "m"
   );
-  let blocks = text.split(strongDelim).map(s => s.trim()).filter(Boolean);
-  if (blocks.length <= 1)
-    blocks = text.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
 
+  // 1) Vorsegmentierung an starken Grenzen
+  let blocks = text.split(strongDelim).map(s => s.trim()).filter(Boolean);
+
+  // Fallback: wenn kaum starke Grenzen gefunden → große Blöcke = gesamter Text
+  if (blocks.length <= 1) {
+    blocks = text.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
+  }
+
+  // 2) Feiner: Große Blöcke noch an Absatzgrenzen teilen
   const refined: string[] = [];
   for (const b of blocks) {
     if (estimateTokens(b) <= hardMaxTokens) {
       refined.push(b);
     } else {
+      // Absatzweise splitten
       const paras = b.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
       let buf: string[] = [];
       let bufTokens = 0;
       for (const p of paras) {
-        const t = estimateTokens(p) + 2;
+        const t = estimateTokens(p) + 2; // +2 für Absatztrenner
         if (bufTokens + t > targetTokens && buf.length) {
           refined.push(buf.join("\n\n"));
           buf = [p];
-          bufTokens = t;
+          bufTokens = estimateTokens(p);
+        } else if (t > hardMaxTokens) {
+          // Extrem langer Absatz → hart schneiden
+          const chunks = hardSplitByChars(p, hardMaxTokens * 4); // *4 → Zeichen
+          refined.push(...chunks);
+          buf = [];
+          bufTokens = 0;
         } else {
           buf.push(p);
           bufTokens += t;
@@ -64,22 +87,57 @@ function semanticChunkText(
       if (buf.length) refined.push(buf.join("\n\n"));
     }
   }
-  return refined;
+
+  // 3) Merge benachbarter Mini-Blöcke (zu klein)
+  const MIN_TOK = 1_000;
+  const merged: string[] = [];
+  let cursor = "";
+  let curTok = 0;
+  for (const seg of refined) {
+    const t = estimateTokens(seg);
+    if (!cursor) {
+      cursor = seg;
+      curTok = t;
+      continue;
+    }
+    if (curTok < MIN_TOK && curTok + t <= hardMaxTokens) {
+      cursor = cursor + "\n\n" + seg;
+      curTok += t;
+    } else {
+      merged.push(cursor);
+      cursor = seg;
+      curTok = t;
+    }
+  }
+  if (cursor) merged.push(cursor);
+
+  return merged;
+}
+
+/** Hartes Zeichen-Splitting falls ein Absatz zu groß ist */
+function hardSplitByChars(s: string, maxChars: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < s.length; i += maxChars) {
+    out.push(s.slice(i, i + maxChars));
+  }
+  return out;
 }
 
 /** ========= JSON aus Agent-Output extrahieren ========= */
 function extractJson(output: string): any {
   if (!output) throw new Error("Leere Antwort vom Agent.");
   const cleaned = output.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+
+  // Finde den größten JSON-Block im Text
   const match = cleaned.match(/\{[\s\S]*\}/);
   if (match) {
     try {
       return JSON.parse(match[0]);
     } catch (err) {
-      console.warn("⚠️ JSON-Parsing-Warnung:", err);
+      console.warn("JSON-Parsing-Warnung:", err);
     }
   }
-  throw new Error("Konnte keinen gültigen JSON-Block extrahieren.");
+  throw new Error("Konnte keinen gültigen JSON-Block aus der Agent-Antwort extrahieren.");
 }
 
 /** ========= Haupt-Agent ========= */
@@ -245,11 +303,11 @@ Falls File Search keine Ergebnisse liefert, analysiere stattdessen direkt den Vo
 
 Bevor du mit der Analyse beginnst, prüfe, ob der Vector Store „avv-files“ aktiv ist 
 und ob mindestens eine Datei eingebettet ist (Size > 0). 
-Wenn nicht, analysiere die neu hochgeladene Datei direkt und füge sie anschließend in den Store ein.
-`,
+Wenn nicht, analysiere die neu hochgeladene Datei direkt und füge sie anschließend in den Store ein.`,
   model: "gpt-5-chat-latest",
   modelSettings: { temperature: 0.2, maxTokens: 4000, topP: 1, store: false },
 });
+
 
 /** ========= POST ========= */
 export async function POST(req: NextRequest) {
@@ -267,15 +325,17 @@ export async function POST(req: NextRequest) {
       inputText = json?.text?.trim() ?? "";
     }
 
-    if (!inputText)
+    if (!inputText) {
       return NextResponse.json({ error: "Kein Text übergeben." }, { status: 400 });
+    }
 
-    // Chunking
-    const chunks = semanticChunkText(inputText, 8000, 9500);
+    // ====== Semantisches Chunking ======
+    const chunks = semanticChunkText(inputText, 8_000, 9_500);
+
     const runner = new Runner();
     const partialResults: any[] = [];
 
-    // Analyse aller Chunks
+    // ====== Chunk-Analyse mit Backoff ======
     for (let i = 0; i < chunks.length; i++) {
       const input = `Teil ${i + 1}/${chunks.length}:\n\n${chunks[i]}`;
       const res = await withTrace(`chunk-${i + 1}`, async () =>
@@ -284,16 +344,12 @@ export async function POST(req: NextRequest) {
         )
       );
       if (res?.finalOutput) {
-        try {
-          const parsed = extractJson(res.finalOutput);
-          partialResults.push(parsed);
-        } catch (e) {
-          console.warn(`⚠️ JSON-Fehler in Teil ${i + 1}:`, e);
-        }
+        const parsed = extractJson(res.finalOutput);
+        partialResults.push(parsed);
       }
     }
 
-    // Merge aller Teilanalysen
+    // ====== Zusammenführung ======
     const mergeInput =
       `Hier sind ${partialResults.length} JSON-Ergebnisse aus AVV-Teilanalysen.\n` +
       `Fasse sie zu einem konsistenten Gesamt-JSON im gleichen Format zusammen.\n\n` +
@@ -303,13 +359,12 @@ export async function POST(req: NextRequest) {
       runner.run(avvCheckAgent, [{ role: "user", content: [{ type: "input_text", text: mergeInput }] }])
     );
 
-    if (!merged?.finalOutput)
-      throw new Error("Merge-Agent lieferte keine Ausgabe.");
-
+    if (!merged?.finalOutput) {
+        throw new Error("Merge-Agent lieferte keine finale Ausgabe.");
+    }
     const finalJson = extractJson(merged.finalOutput);
     return NextResponse.json(finalJson);
   } catch (e: any) {
-    console.error("❌ Agent-Serverfehler:", e);
     return NextResponse.json(
       { error: "Agent-Serverfehler", details: e?.message ?? String(e) },
       { status: 500 }
@@ -317,7 +372,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** ========= Exponentielles Backoff ========= */
+/** ========= Exponentielles Backoff für TPM/Ratenfehler ========= */
 async function runWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   let delay = 800;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -326,12 +381,14 @@ async function runWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<
     } catch (err: any) {
       const msg = String(err?.message || err);
       const isRateLimit =
-        /too_many_requests|rate limit|tpm|overloaded/i.test(msg) ||
+        /too_many_requests|rate limit|tokens per min|tpm|overloaded/i.test(msg) ||
         err?.code === "too_many_requests";
+
       if (!isRateLimit || attempt === maxRetries) throw err;
       await new Promise(r => setTimeout(r, delay));
-      delay *= 2;
+      delay *= 2; // Exponential
     }
   }
+  // Unreachable
   throw new Error("Backoff failed.");
 }

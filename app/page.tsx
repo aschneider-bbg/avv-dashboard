@@ -522,6 +522,7 @@ export default function Page() {
         </div>
       </div>
 
+
       {/* Maßnahmen */}
       <div className="card mb-4">
         <div className="card-body">

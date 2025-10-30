@@ -1,15 +1,9 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-/**
- * AVV Dashboard – robust gegen mehrere JSON-Varianten
- * - Agent-Builder klassisch: { executive_summary, contract_metadata{title,date,parties[]}, findings{art_28, additional_clauses}, compliance_score, risk_score, actions }
- * - Merge/Alt:            : { article_28_analysis, additional_clauses, parties:{...}, recommended_actions, compliance_score{details,bonus,penalties} }
- */
-
+/** ========= Typen ========= */
 type Evidence = { quote: string; page?: number };
 
-// UI-Labels (kanonisch, DE)
 const ART28_LABELS: Record<string, string> = {
   weisung: "Weisung",
   vertraulichkeit: "Vertraulichkeit",
@@ -21,7 +15,6 @@ const ART28_LABELS: Record<string, string> = {
   audit_nachweis: "Audit/Nachweis",
 };
 
-// Mapping EN → DE (kanonische Keys)
 const EN_TO_CANON: Record<string, keyof typeof ART28_LABELS> = {
   instructions_only: "weisung",
   confidentiality: "vertraulichkeit",
@@ -33,13 +26,28 @@ const EN_TO_CANON: Record<string, keyof typeof ART28_LABELS> = {
   audit_rights: "audit_nachweis",
 };
 
-// Status Mapping
 const STATUS_EN_TO_DE: Record<string, "erfüllt" | "teilweise" | "fehlt" | "vorhanden" | "nicht gefunden"> = {
   met: "erfüllt",
   partial: "teilweise",
   missing: "fehlt",
   present: "vorhanden",
   "not_found": "nicht gefunden",
+};
+
+const ACTION_CATEGORY_DE: Record<string, string> = {
+  // Kern-Artikel
+  instructions_only: "Weisung (nur auf dokumentierte Weisung)",
+  confidentiality: "Vertraulichkeit",
+  security_TOMs: "Technisch-organisatorische Maßnahmen",
+  subprocessors: "Unterauftragsverarbeiter",
+  data_subject_rights_support: "Unterstützung Betroffenenrechte",
+  breach_support: "Unterstützung bei Datenschutzverletzungen",
+  deletion_return: "Löschung/Rückgabe nach Vertragsende",
+  audit_rights: "Audit- und Nachweisrechte",
+  // Zusatzklauseln
+  international_transfers: "Internationale Übermittlungen",
+  liability_cap: "Haftungsregel/Haftungsbegrenzung",
+  jurisdiction: "Gerichtsstand/Rechtswahl",
 };
 
 function mapStatus(v?: string) {
@@ -52,57 +60,56 @@ function mapStatus(v?: string) {
   );
 }
 
-/** Normalisiert beliebige API-Antwort in ein gemeinsames deutsches Objekt */
+function labelForCategory(key: string) {
+  return ACTION_CATEGORY_DE[key] ?? key.replace(/_/g, " ");
+}
+
+/** ========= Normalisierung ========= */
 function normalize(input: any) {
-  // ---- Executive Summary
-  const execSummary: string =
-    (typeof input?.executive_summary === "string" && input.executive_summary.trim()) || "";
+  // Executive Summary
+  const executiveSummary: string = input?.executive_summary ?? "";
 
-  // ---- Parteien: Array-Variante (klassisch) ODER Objekt-Variante (neu)
-  let parteien: Array<{ rolle: string; name: string; land?: string }> = [];
-  if (Array.isArray(input?.contract_metadata?.parties)) {
-    parteien = (input.contract_metadata.parties as any[]).map((p) => ({
-      rolle:
-        p?.role === "controller"
-          ? "Verantwortlicher"
-          : p?.role === "processor"
-          ? "Auftragsverarbeiter"
-          : p?.role ?? "",
-      name: p?.name ?? "",
-      land: p?.country ?? "",
-    }));
-  } else if (input?.parties && typeof input.parties === "object") {
-    const p = input.parties;
-    if (p.controller) parteien.push({ rolle: "Verantwortlicher", name: String(p.controller), land: "" });
-    if (p.processor) parteien.push({ rolle: "Auftragsverarbeiter", name: String(p.processor), land: "" });
-    if (p.processor_dpo)
-      parteien.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(p.processor_dpo), land: "" });
-  }
-
-  // ---- Metadata
+  // Metadata (Titel/Datum)
   const meta =
     input?.vertrag_metadata ??
     (input?.contract_metadata
       ? {
           titel: input.contract_metadata.title ?? "",
           datum: input.contract_metadata.date ?? "",
-          parteien,
         }
-      : {
-          titel: input?.contract_metadata?.title || "",
-          datum: input?.contract_metadata?.date || "",
-          parteien,
-        });
+      : { titel: "", datum: "" });
 
-  // ---- Art. 28: akzeptiere mehrere Pfade
-  const a28src =
-    input?.prüfung?.art_28 ??
-    input?.findings?.art_28 ??
-    input?.article_28_analysis ??
-    {};
+  // Parteien – Variante A: contract_metadata.parties (Array)
+  const partiesA =
+    input?.contract_metadata?.parties?.map((p: any) => ({
+      rolle:
+        p?.role === "controller"
+          ? "Verantwortlicher"
+          : p?.role === "processor"
+          ? "Auftragsverarbeiter"
+          : p?.role || "",
+      name: p?.name || "",
+      land: p?.country || "",
+    })) ?? [];
 
+  // Parteien – Variante B: parties (Objekt mit controller/processor/processor_dpo)
+  const partiesB: { rolle: string; name: string; land?: string }[] = [];
+  if (input?.parties && typeof input.parties === "object") {
+    const p = input.parties;
+    if (p.controller)
+      partiesB.push({ rolle: "Verantwortlicher", name: String(p.controller) });
+    if (p.processor)
+      partiesB.push({ rolle: "Auftragsverarbeiter", name: String(p.processor) });
+    if (p.processor_dpo)
+      partiesB.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(p.processor_dpo) });
+  }
+
+  const parties = [...partiesA, ...partiesB];
+
+  // Art. 28
+  const a28src = input?.prüfung?.art_28 ?? input?.findings?.art_28 ?? input?.article_28_analysis ?? {};
   const a28: Record<string, { status?: string; belege: Evidence[] }> = {};
-  // deutsch direkt übernehmen
+  // Deutsch-Kanon zuerst
   for (const k of Object.keys(ART28_LABELS)) {
     const node = a28src[k];
     if (node) {
@@ -112,31 +119,25 @@ function normalize(input: any) {
       };
     }
   }
-  // englisch → kanonisch
+  // Englisch → Kanon
   for (const k of Object.keys(a28src)) {
     const canon = EN_TO_CANON[k];
-    if (canon) {
+    if (canon && !a28[canon]) {
       const node = a28src[k];
-      if (!a28[canon]) {
-        a28[canon] = {
-          status: mapStatus(node?.status) ?? node?.status,
-          belege: (node?.evidence ?? node?.belege ?? []) as Evidence[],
-        };
-      }
+      a28[canon] = {
+        status: mapStatus(node?.status) ?? node?.status,
+        belege: (node?.evidence ?? node?.belege ?? []) as Evidence[],
+      };
     }
   }
 
-  // ---- Zusatzklauseln (beide Schemata)
+  // Zusatzklauseln
   const extrasSrc =
-    input?.prüfung?.zusatzklauseln ??
-    input?.findings?.additional_clauses ??
-    input?.additional_clauses ??
-    {};
+    input?.prüfung?.zusatzklauseln ?? input?.findings?.additional_clauses ?? input?.additional_clauses ?? {};
   const extrasMap = {
-    internationale_übermittlungen:
-      (extrasSrc as any)?.internationale_übermittlungen ?? (extrasSrc as any)?.international_transfers,
-    haftungsbegrenzung: (extrasSrc as any)?.haftungsbegrenzung ?? (extrasSrc as any)?.liability_cap,
-    gerichtsstand_recht: (extrasSrc as any)?.gerichtsstand_recht ?? (extrasSrc as any)?.jurisdiction,
+    internationale_übermittlungen: extrasSrc?.internationale_übermittlungen ?? extrasSrc?.international_transfers,
+    haftungsbegrenzung: extrasSrc?.haftungsbegrenzung ?? extrasSrc?.liability_cap,
+    gerichtsstand_recht: extrasSrc?.gerichtsstand_recht ?? extrasSrc?.jurisdiction,
   };
   const extras: Record<string, { status?: string; belege: Evidence[] }> = {};
   for (const [k, v] of Object.entries(extrasMap)) {
@@ -147,48 +148,26 @@ function normalize(input: any) {
     };
   }
 
-  // ---- Scores & Rationales
-  const compOverall =
-    typeof input?.compliance_score?.overall === "number" ? input.compliance_score.overall : null;
-  const compRationale = (input?.compliance_score?.rationale ?? "").toString();
-  const compDetails = input?.compliance_score?.details || null;
-  const compBonus = typeof input?.compliance_score?.bonus === "number" ? input.compliance_score.bonus : null;
-  const compPenalties =
-    typeof input?.compliance_score?.penalties === "number" ? input.compliance_score.penalties : null;
-
+  // Scores & rationale
   const riskOverall =
-    typeof input?.risk_score?.overall === "number"
-      ? input.risk_score.overall
-      : typeof input?.risiko_score?.gesamt === "number"
+    typeof input?.risiko_score?.gesamt === "number"
       ? input.risiko_score.gesamt
+      : typeof input?.risk_score?.overall === "number"
+      ? input.risk_score.overall
       : null;
-  const riskRationale = (input?.risk_score?.rationale ?? input?.risk_rationale ?? "").toString();
+  const riskRationale = input?.risk_rationale ?? input?.risk_score?.rationale ?? "";
 
-  // ---- Actions
-  // alt: actions = [{severity, issue, suggested_clause, rationale?}]
-  // neu: recommended_actions = [{category, severity, action}]
-  const actions: Array<{ severity: "high" | "medium" | "low"; issue: string; suggested_clause: string; rationale?: string }> =
-    Array.isArray(input?.actions)
-      ? input.actions
-      : Array.isArray(input?.recommended_actions)
-      ? input.recommended_actions.map((a: any) => ({
-          severity: (a.severity || "medium") as "high" | "medium" | "low",
-          issue: a.category || "action",
-          suggested_clause: a.action || "",
-          rationale: "",
-        }))
-      : [];
+  const actions: any[] =
+    input?.recommended_actions ??
+    input?.actions ??
+    [];
 
   return {
-    execSummary,
+    executiveSummary,
     meta,
+    parties,
     a28,
     extras,
-    compOverall,
-    compRationale,
-    compDetails,
-    compBonus,
-    compPenalties,
     riskOverall,
     riskRationale,
     actions,
@@ -196,11 +175,98 @@ function normalize(input: any) {
   };
 }
 
-/** ======== Chart Utils ======== */
-function estimateTokens(s: string): number {
-  return Math.ceil((s || "").length / 4);
+/** ========= Mini-Tooltip (ohne Lib) ========= */
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="bbg-tooltip">
+      {children}
+      <span className="bbg-tooltip-content">{text}</span>
+      <style jsx>{`
+        .bbg-tooltip {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+        }
+        .bbg-tooltip-content {
+          position: absolute;
+          left: 50%;
+          bottom: 135%;
+          transform: translateX(-50%);
+          min-width: 260px;
+          max-width: 420px;
+          padding: 10px 12px;
+          border-radius: 8px;
+          background: #0b0e14;
+          color: #e8eefc;
+          border: 1px solid #1d2540;
+          box-shadow: 0 8px 24px rgba(0,0,0,.35);
+          font-size: 12.5px;
+          line-height: 1.35;
+          white-space: pre-wrap;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity .15s ease, transform .15s ease;
+          z-index: 50;
+        }
+        .bbg-tooltip:hover .bbg-tooltip-content,
+        .bbg-tooltip:focus-within .bbg-tooltip-content {
+          opacity: 1;
+          transform: translateX(-50%) translateY(-2px);
+        }
+      `}</style>
+    </span>
+  );
 }
 
+/** EN->DE für Scoring-Keys */
+const SCORE_KEY_LABELS: Record<string, string> = {
+  instructions_only: "Weisung (nur auf dokumentierte Weisung)",
+  confidentiality: "Vertraulichkeit",
+  security_TOMs: "Technisch-organisatorische Maßnahmen",
+  subprocessors: "Unterauftragsverarbeiter",
+  data_subject_rights_support: "Unterstützung Betroffenenrechte",
+  breach_support: "Unterstützung bei Datenschutzverletzungen",
+  deletion_return: "Löschung/Rückgabe nach Vertragsende",
+  audit_rights: "Audit- und Nachweisrechte",
+  bonus: "Bonus",
+  penalties: "Abzüge",
+};
+
+function labelScoreKey(k: string) {
+  return SCORE_KEY_LABELS[k] ?? k.replace(/_/g, " ");
+}
+
+/** Tooltip-Text aus compliance_score bauen */
+function buildComplianceTooltip(raw: any, fallbackCompliance: number | null) {
+  const cs = raw?.compliance_score || {};
+  const details = cs?.details && typeof cs.details === "object" ? cs.details : null;
+  const bonus = typeof cs?.bonus === "number" ? cs.bonus : null;
+  const penalties = typeof cs?.penalties === "number" ? cs.penalties : null;
+  const rational = typeof cs?.rationale === "string" ? cs.rationale.trim() : "";
+
+  // Kopfzeile
+  let text = "Begründung Compliance\n";
+  text += rational ? `${rational}\n\n` : "—\n\n";
+  text += "Detailpunkte\n";
+
+  if (details) {
+    Object.entries(details).forEach(([k, v]) => {
+      const val = typeof v === "number" ? v : Number(v) || 0;
+      text += `• ${labelScoreKey(k)}: ${val}\n`;
+    });
+  } else if (fallbackCompliance != null) {
+    text += `• (ohne Agent-Details) berechneter Score: ${fallbackCompliance}\n`;
+  } else {
+    text += "• —\n";
+  }
+
+  if (bonus != null) text += `• ${labelScoreKey("bonus")}: ${bonus}\n`;
+  if (penalties != null) text += `• ${labelScoreKey("penalties")}: ${penalties}\n`;
+
+  return text.trim();
+}
+
+/** ========= Komponente ========= */
 export default function Page() {
   const [raw, setRaw] = useState<any>(null);
   const [data, setData] = useState<ReturnType<typeof normalize> | null>(null);
@@ -211,7 +277,7 @@ export default function Page() {
   const chartRef = useRef<HTMLCanvasElement | null>(null);
   const chartInst = useRef<any>(null);
 
-  // ---- KPIs (aus normalisiertem Modell) ----
+  // KPIs aus Matrix
   const kpis = useMemo(() => {
     const src = data?.a28 ?? {};
     const statuses = Object.values(src).map((x) => x?.status || "");
@@ -222,8 +288,7 @@ export default function Page() {
     return { erfüllt, teilweise, fehlt, total, any: erfüllt + teilweise + fehlt > 0 };
   }, [data]);
 
-  // ---- Compliance & Risiko ----
-  // 1) Compliance aus Matrix (Fallback)
+  // Compliance aus Matrix (+leichter Bonus für Zusatzklauseln)
   const complianceMatrix = useMemo(() => {
     if (!kpis.any) return null;
     const achieved = kpis.erfüllt * 1 + kpis.teilweise * 0.5;
@@ -244,18 +309,22 @@ export default function Page() {
     return Math.max(0, Math.min(100, Math.round(score)));
   }, [kpis, data?.extras]);
 
-  // 2) Wenn der Agent eine explizite Compliance liefert, nutze die
-  const explicitCompliance =
-    typeof raw?.compliance_score?.overall === "number" ? raw.compliance_score.overall : data?.compOverall ?? null;
+  // Falls ein „overall“ vom Backend eigentlich Compliance ist, erkennen:
+  const agentOverall: number | null =
+    typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : null;
 
-  // 3) Finale Compliance
-  const compliance = explicitCompliance ?? complianceMatrix;
+  const rationaleText = (data?.riskRationale || "").toString().toLowerCase();
+  const POSITIVE_TOKENS = ["wesentlichen anforderungen", "weitgehend erfüllt", "konform", "erfüllt", "entspricht art. 28"];
+  const mentionsPositive = POSITIVE_TOKENS.some((t) => rationaleText.includes(t));
+  const isLikelyComplianceScore = agentOverall != null && agentOverall >= 60 && mentionsPositive;
 
-  // 4) Finale Risiko
-  const explicitRisk = typeof data?.riskOverall === "number" ? data.riskOverall : null;
-  const risk = explicitRisk ?? (compliance != null ? Math.max(0, 100 - compliance) : null);
+  const compliance = isLikelyComplianceScore ? agentOverall : complianceMatrix;
+  const risk = isLikelyComplianceScore
+    ? (compliance != null ? Math.max(0, 100 - compliance) : null)
+    : (typeof data?.riskOverall === "number"
+        ? data.riskOverall
+        : (agentOverall != null ? agentOverall : (compliance != null ? Math.max(0, 100 - compliance) : null)));
 
-  // Ampellogik
   const compColor =
     compliance == null ? "text-secondary" : compliance >= 85 ? "text-success" : compliance >= 70 ? "text-warning" : "text-danger";
   const riskColor =
@@ -266,7 +335,7 @@ export default function Page() {
   const riskLabel =
     risk == null ? "—" : risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch";
 
-  // Doughnut-Chart
+  // Doughnut
   const donut = useMemo(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
   useEffect(() => {
     const Chart = (window as any).Chart as any;
@@ -304,7 +373,7 @@ export default function Page() {
     });
   }, [donut, data, kpis.any]);
 
-  // Upload
+  // Upload Handler
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -340,6 +409,8 @@ export default function Page() {
     if (s === "nicht gefunden") return <span className="badge bg-secondary">nicht gefunden</span>;
     return <span className="badge bg-secondary">—</span>;
   };
+
+  const summaryText = (data?.executiveSummary || "").trim() || (data?.riskRationale || "—");
 
   return (
     <div className="container py-4">
@@ -399,16 +470,8 @@ export default function Page() {
                 )}
               </div>
 
-              {/* Warnzeile */}
-              {(compliance != null && compliance < 60) || (risk != null && risk > 60) ? (
-                <div className="w-100 mt-3 text-danger d-flex align-items-center" style={{ gap: 8 }}>
-                  <i className="bi bi-exclamation-triangle-fill"></i>
-                  <span className="small">Niedrige Vertragstreue / erhöhtes Risiko – Vertrag sollte dringend nachgeschärft werden.</span>
-                </div>
-              ) : null}
-
-              {/* Vertragsinformationen kompakt */}
-              <div className="card p-3" style={{ minWidth: 240 }}>
+              {/* Vertragsinformationen */}
+              <div className="card p-3" style={{ minWidth: 260 }}>
                 <div className="muted">Vertrags­informationen</div>
                 <div className="fw-semibold">{data?.meta?.titel || "—"}</div>
                 <div className="muted small">{data?.meta?.datum || "—"}</div>
@@ -418,7 +481,7 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Chart + Executive Summary */}
+      {/* Chart + Summary */}
       <div className="row g-3 mb-4">
         <div className="col-lg-5">
           <div className="card h-100">
@@ -437,61 +500,28 @@ export default function Page() {
           <div className="card h-100">
             <div className="card-body">
               <h2 className="h6 mb-2">Executive Summary</h2>
-              <p className="mb-0" style={{ color: "var(--text)" }}>{data?.execSummary || "—"}</p>
+              <p className="mb-0" style={{ color: "var(--text)" }}>{summaryText}</p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Scoring-Details */}
-      <div className="card mb-4">
-        <div className="card-body">
-          <h2 className="h6 mb-2">Scoring-Details</h2>
-          <div className="row">
-            <div className="col-md-6 mb-3">
-              <div className="muted mb-1">Begründung Compliance</div>
-              <div className="text-white">{data?.compRationale || "—"}</div>
-              {(data?.compBonus != null || data?.compPenalties != null) && (
-                <div className="small mt-2" style={{ color: "#9aa3b2" }}>
-                  {data?.compBonus != null && <>Bonus: +{data.compBonus}&nbsp;&nbsp;</>}
-                  {data?.compPenalties != null && <>Abzüge: −{data.compPenalties}</>}
-                </div>
-              )}
-              {data?.compDetails && (
-                <div className="mt-3">
-                  <div className="muted mb-1">Detailpunkte</div>
-                  <ul className="mb-0 small" style={{ color: "#d5d9e3" }}>
-                    {Object.entries(data.compDetails).map(([k, v]) => (
-                      <li key={k}>{k}: {String(v)}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-            <div className="col-md-6">
-              <div className="muted mb-1">Begründung Risiko</div>
-              <div className="text-white">{data?.riskRationale || "—"}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Vertragsinformationen */}
+      {/* Vertragsinformationen + Parteien */}
       <div className="card mb-4">
         <div className="card-body">
           <h2 className="h6">Vertragsinformationen</h2>
           <div className="row">
-            <div className="col-md-6">
+            <div className="col-md-6 mb-3">
               <div><span className="muted">Titel:</span> {data?.meta?.titel || "—"}</div>
               <div><span className="muted">Datum:</span> {data?.meta?.datum || "—"}</div>
             </div>
             <div className="col-md-6">
               <div className="muted">Parteien</div>
-              {!data ? (
+              {!data || (data.parties ?? []).length === 0 ? (
                 <div className="muted">—</div>
               ) : (
                 <ul className="mb-0">
-                  {(data?.meta?.parteien ?? []).map((p: any, i: number) => (
+                  {data.parties.map((p: any, i: number) => (
                     <li key={i} className="text-white">
                       {p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}
                     </li>
@@ -579,7 +609,7 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Maßnahmen */}
+      {/* Empfohlene Maßnahmen */}
       <div className="card mb-4">
         <div className="card-body">
           <h2 className="h6 mb-3">Empfohlene Maßnahmen</h2>
@@ -591,6 +621,8 @@ export default function Page() {
             <div className="list-group">
               {(data?.actions || []).map((a: any, i: number) => {
                 const sev = a.severity === "high" ? "danger" : a.severity === "medium" ? "warning" : "info";
+                const heading = labelForCategory(a.category || a.issue || "");
+                const detail = a.suggested_clause ?? a.action ?? "";
                 return (
                   <div
                     key={i}
@@ -598,8 +630,8 @@ export default function Page() {
                     style={{ background: "#0f1422", borderColor: "#1d2540", color: "var(--text)" }}
                   >
                     <div className="ms-2 me-auto">
-                      <div className="fw-semibold">{a.issue}</div>
-                      <small className="muted">{a.suggested_clause}</small>
+                      <div className="fw-semibold">{heading}</div>
+                      {detail && <small className="muted d-block">{detail}</small>}
                     </div>
                     <span className={`badge text-bg-${sev} rounded-pill`}>{a.severity}</span>
                   </div>

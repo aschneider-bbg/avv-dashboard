@@ -4,6 +4,39 @@ import { useEffect, useMemo, useRef, useState } from "react";
 /** ===== Utils ===== */
 const isNum = (v: any): v is number => typeof v === "number" && !Number.isNaN(v);
 
+// Gewichte nach deinem Schema (Summe 100)
+const WEIGHTS: Record<string, number> = {
+  instructions_only: 15,
+  confidentiality: 10,
+  security_TOMs: 20,
+  subprocessors: 15,
+  data_subject_rights_support: 10,
+  breach_support: 10,
+  deletion_return: 10,
+  audit_rights: 10,
+};
+
+const LABELS_DE: Record<string, string> = {
+  instructions_only: "Weisung (nur dokumentierte Weisung)",
+  confidentiality: "Vertraulichkeit",
+  security_TOMs: "Technisch-organisatorische Maßnahmen",
+  subprocessors: "Unterauftragsverarbeiter",
+  data_subject_rights_support: "Unterstützung Betroffenenrechte",
+  breach_support: "Unterstützung bei Datenschutzverletzungen",
+  deletion_return: "Löschung/Rückgabe nach Vertragsende",
+  audit_rights: "Audit- und Nachweisrechte",
+};
+
+const statusToFactor = (s?: string) => {
+  if (!s) return 0;
+  const k = s.toLowerCase();
+  if (k === "met" || k === "erfüllt") return 1;
+  if (k === "partial" || k === "teilweise") return 0.5;
+  return 0;
+};
+
+const fmt = (n: number) => Number.isInteger(n) ? `${n}` : n.toFixed(1);
+
 /** Labels für Compliance-Details (Agent liefert keys in EN) */
 const DETAILS_LABELS: Record<string, string> = {
   instructions_only: "Weisung (nur auf dokumentierte Weisung)",
@@ -18,6 +51,67 @@ const DETAILS_LABELS: Record<string, string> = {
   penalties: "Abzüge",
   corrections: "Korrekturen",
 };
+
+function buildComplianceTooltip(
+  a28: Record<string, { status?: string }>,
+  extras: any,
+  details?: Record<string, any>
+) {
+  // Grundpunkte aus Kategorien
+  const order = Object.keys(WEIGHTS);
+  const lines: string[] = [];
+  let base = 0;
+
+  for (const key of order) {
+    const weight = WEIGHTS[key];
+    const status = a28?.[key]?.status ?? "";
+    const f = statusToFactor(status);
+    const pts = weight * f;
+    base += pts;
+
+    const statusDe =
+      status?.toLowerCase() === "met" ? "erfüllt" :
+      status?.toLowerCase() === "partial" ? "teilweise" :
+      status?.toLowerCase() === "missing" ? "fehlt" : (status || "—");
+
+    lines.push(`• ${LABELS_DE[key]}: ${weight} × ${fmt(f)} = ${fmt(pts)}  (${statusDe})`);
+  }
+
+  // Bonus / Abzüge
+  // Quelle 1: vom Backend geliefert (bevorzugt)
+  let bonus = 0;
+  let abzug = 0;
+  if (details && typeof details === "object") {
+    if (typeof details.bonus === "number") bonus = details.bonus;
+    if (typeof details.penalties === "number") abzug += details.penalties;
+    if (typeof details.corrections === "number") abzug += Math.abs(details.corrections);
+  } else {
+    // Quelle 2 (Fallback): aus Zusatzklauseln wie bisher heuristisch
+    const intl = extras?.["internationale_übermittlungen"]?.status;
+    if (intl === "erfüllt") bonus += 5; else if (intl === "teilweise") bonus += 2; else if (intl === "vorhanden") bonus += 3;
+    const liab = extras?.["haftungsbegrenzung"]?.status;
+    if (liab === "erfüllt" || liab === "vorhanden") bonus += 2;
+    const juris = extras?.["gerichtsstand_recht"]?.status;
+    if (juris === "erfüllt" || juris === "vorhanden") bonus += 2;
+  }
+
+  const total = Math.max(0, Math.min(100, Math.round(base + bonus - abzug)));
+
+  return (
+    `Begründung Compliance\n\n` +
+    lines.join("\n") +
+    `\n\nBonus: +${fmt(bonus)}   Abzüge: −${fmt(abzug)}` +
+    `\nGesamt: ${fmt(base)} + ${fmt(bonus)} − ${fmt(abzug)} = ${fmt(total)} / 100`
+  );
+}
+
+function buildRiskTooltip(riskOverall?: number, rationale?: string, complianceOverall?: number) {
+  const rationaleText = (rationale || "—").trim();
+  const derived = (typeof complianceOverall === "number")
+    ? `Hinweis: Risiko ≈ 100 − Compliance → ${100 - complianceOverall}`
+    : "";
+  return `Begründung Risiko\n\n${rationaleText}\n\n${derived}`.trim();
+}
 
 /** Baut den Tooltip-Text für die Compliance-Details hübsch zusammen */
 function buildComplianceDetailsTooltip(details?: Record<string, any>) {
@@ -46,6 +140,18 @@ function buildComplianceDetailsTooltip(details?: Record<string, any>) {
   if (lines.length === 0) return "—";
   return `Begründung Compliance\n\n${lines.map(l => `• ${l}`).join("\n")}`;
 }
+
+// oben im Component-Body, nachdem data/compliance/risk berechnet wurden:
+const complianceTooltip = buildComplianceTooltip(
+  data?.a28 || {},
+  data?.extras || {},
+  raw?.compliance_score?.details
+);
+const riskTooltip = buildRiskTooltip(
+  (typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : risk ?? undefined) as number | undefined,
+  raw?.risk_score?.rationale || data?.riskRationale,
+  compliance ?? undefined
+);
 
 /* ---------- Hilfsfunktionen (robust) ---------- */
 const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : []);
@@ -412,14 +518,9 @@ export default function Page() {
               <div className="card p-3" style={{ minWidth: 200 }}>
                 <div className="muted">
                     Compliance{" "}
-                    {isNum(raw?.compliance_score?.overall) && (
-                        <i
-                        className="bi bi-info-circle ms-1"
-                        style={{ cursor: "help" }}
-                        title={buildComplianceDetailsTooltip(raw?.compliance_score?.details)}
-                        aria-label="Scoring-Details"
-                        />
-                )}
+                    <span className="ms-1" title={complianceTooltip} aria-label="Details">
+                        <i className="bi bi-info-circle" />
+                    </span>
                 </div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
@@ -438,16 +539,9 @@ export default function Page() {
               <div className="card p-3" style={{ minWidth: 200 }}>
                 <div className="muted">
                     Risiko{" "}
-                    {(raw?.risk_score?.rationale || data?.riskRationale) && (
-                        <i
-                        className="bi bi-info-circle ms-1"
-                        style={{ cursor: "help" }}
-                        title={`Begründung Risiko\n\n${(raw?.risk_score?.rationale || data?.riskRationale || "—")
-                            .toString()
-                            .trim()}`}
-                        aria-label="Risiko-Begründung"
-                        />
-                    )}
+                    <span className="ms-1" title={riskTooltip} aria-label="Details">
+                        <i className="bi bi-info-circle" />
+                    </span>
                 </div>
                 <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>

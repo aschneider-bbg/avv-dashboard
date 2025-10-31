@@ -411,7 +411,7 @@ Zusatzregeln
 • Keine Meta-Kommentare, keine Redundanzen.
 `,
   model: "gpt-5-chat-latest",
-  modelSettings: { temperature: 0.1, maxTokens: 4000, topP: 1, store: false },
+  modelSettings: { temperature: 0.2, maxTokens: 4000, topP: 1, store: false },
 });
 
 /* ========================= Backoff ========================= */

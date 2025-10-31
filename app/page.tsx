@@ -550,53 +550,66 @@ export default function Page() {
                         </div>
                     </div>
 
-                    <div className="flex flex-col gap-4">
-                        {/* === KPI-Zeile: Compliance & Risiko === */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
-                            <div className="card bg-slate-900 p-4 flex flex-col justify-between">
-                                <h3 className="text-lg font-medium text-gray-300">Compliance</h3>
-                                <div className="text-5xl font-bold text-yellow-400">
-                                    {compliance == null ? "—" : `${compliance}/100`}
-                                    </div>
-                                    <p className="text-gray-400">{compLabel}</p>
-                                    <div className="w-full bg-gray-700 h-3 rounded-full mt-2">
-                                    <div
-                                        className={`h-3 rounded-full ${compliance == null ? "bg-gray-600" : compliance >= 85 ? "bg-green-600" : compliance >= 70 ? "bg-yellow-500" : "bg-red-600"}`}
-                                        style={{ width: `${compliance ?? 0}%` }}
-                                    />
-                                    </div>
-                            </div>
-
-                            <div className="card bg-slate-900 p-4 flex flex-col justify-between">
-                                <h3 className="text-lg font-medium text-gray-300">Risiko</h3>
-                                <div className="text-5xl font-bold text-yellow-400">
-                                    {risk == null ? "—" : `${risk}/100`}
-                                    </div>
-                                    <p className="text-gray-400">{riskLabel}</p>
-                                    <div className="w-full bg-gray-700 h-3 rounded-full mt-2">
-                                    <div
-                                        className={`h-3 rounded-full ${risk == null ? "bg-gray-600" : risk <= 20 ? "bg-green-600" : risk <= 40 ? "bg-yellow-500" : "bg-red-600"}`}
-                                        style={{ width: `${risk ?? 0}%` }}
-                                    />
-                                    </div>
+                    {/* 1. Reihe: KPIs (immer sichtbar, feste Höhe) */}
+                    <div className="row g-3 align-items-stretch">
+                        {/* Compliance */}
+                        <div className="col-12 col-md-6 col-lg-3">
+                            <div className="card p-3 kpi-card h-100">
+                                <div className="muted">
+                                    Compliance{" "}
+                                    <span className="ms-1" title={complianceTooltip} aria-label="Details">
+                                        <i className="bi bi-info-circle" />
+                                    </span>
+                                </div>
+                                <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
+                                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
+                                    {compliance == null ? "—" : (compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht")}
+                                </div>
+                                <div className="mt-2">
+                                    {compliance == null ? (
+                                        <div className="small muted">No data</div>
+                                    ) : (
+                                        <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
+                                            <div className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`} style={{ width: `${compliance}%` }} />
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
 
-                        {/* === Vertragsinformationen-Zeile (immer unten, volle Breite) === */}
-                        <div className="card bg-slate-900 p-4">
-                            <h3 className="text-lg font-medium text-gray-300 mb-1">
-                                Vertragsinformationen
-                            </h3>
-                            {contract ? (
-                                <>
-                                    <div className="font-semibold text-white">{contract.title}</div>
-                                    {contract.date && (
-                                        <div className="text-gray-400 text-sm">{contract.date}</div>
+                        {/* Risiko */}
+                        <div className="col-12 col-md-6 col-lg-3">
+                            <div className="card p-3 kpi-card h-100">
+                                <div className="muted">
+                                    Risiko{" "}
+                                    <span className="ms-1" title={riskTooltip} aria-label="Details">
+                                        <i className="bi bi-info-circle" />
+                                    </span>
+                                </div>
+                                <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
+                                <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
+                                    {risk == null ? "—" : (risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch")}
+                                </div>
+                                <div className="mt-2">
+                                    {risk == null ? (
+                                        <div className="small muted">No data</div>
+                                    ) : (
+                                        <div className="progress" role="progressbar" aria-valuenow={risk} aria-valuemin={0} aria-valuemax={100}>
+                                            <div className={`progress-bar ${risk <= 20 ? "bg-success" : risk <= 40 ? "bg-warning" : "bg-danger"}`} style={{ width: `${risk}%` }} />
+                                        </div>
                                     )}
-                                </>
-                            ) : (
-                                <div className="text-gray-500">—</div>
-                            )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="col-12 col-md-6 col-lg-6">
+                            <div className="col-12">
+                                <div className="card p-3">
+                                    <div className="muted">Vertrags­informationen</div>
+                                    <div className="fw-semibold">{data?.meta?.titel || "—"}</div>
+                                    <div className="muted small">{data?.meta?.datum || "—"}</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>

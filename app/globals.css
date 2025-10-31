@@ -1,3 +1,8 @@
 /* /app/globals.css */
 :root { color-scheme: light; }
 body { margin: 0; }
+
+.kpi-card { min-height: 180px; }
+  @media (min-width: 992px) { /* etwas mehr Luft auf großen Screens */
+    .kpi-card { min-height: 190px; }
+  }

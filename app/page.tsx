@@ -1,10 +1,3 @@
-<style jsx>{`
-  .kpi-card { min-height: 180px; }
-  @media (min-width: 992px) { /* etwas mehr Luft auf großen Screens */
-    .kpi-card { min-height: 190px; }
-  }
-`}</style>
-
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -219,44 +212,75 @@ function normalize(input: any) {
       : { titel: "", datum: "" });
 
   // Parteien – A: contract_metadata.parties[]
-  const partiesA = toArray<any>(input?.contract_metadata?.parties).map((p) => ({
-    rolle:
-      p?.role === "controller"
-        ? "Verantwortlicher"
-        : p?.role === "processor"
-        ? "Auftragsverarbeiter"
-        : p?.role ?? "",
-    name: p?.name ?? "",
-    land: p?.country ?? "",
-  }));
+const partiesA = toArray<any>(input?.contract_metadata?.parties).map((p) => ({
+  rolle:
+    p?.role === "controller"
+      ? "Verantwortlicher"
+      : p?.role === "processor"
+      ? "Auftragsverarbeiter"
+      : (p?.role ?? ""),
+  name: p?.name ?? "",
+  land: p?.country ?? "",
+}));
 
-  // Parteien – B: eigenes Objekt {controller, processor, processor_dpo}
-  const partiesB: { rolle: string; name: string; land?: string }[] = [];
-  if (input?.parties && typeof input.parties === "object" && !Array.isArray(input.parties)) {
-    const p = input.parties;
-    if (p.controller) partiesB.push({ rolle: "Verantwortlicher", name: String(p.controller) });
-    if (p.processor) partiesB.push({ rolle: "Auftragsverarbeiter", name: String(p.processor) });
-    if (p.processor_dpo)
-      partiesB.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(p.processor_dpo) });
+// Parteien – B: eigenes Objekt {controller, processor, processor_dpo}
+const partiesB: { rolle: string; name: string; land?: string }[] = [];
+if (input?.parties && typeof input.parties === "object" && !Array.isArray(input.parties)) {
+  const p = input.parties;
+  if (p.controller) partiesB.push({ rolle: "Verantwortlicher", name: String(p.controller) });
+  if (p.processor)  partiesB.push({ rolle: "Auftragsverarbeiter", name: String(p.processor) });
+  if (p.processor_dpo) {
+    // DSB nicht als Partei ausgeben – optional separat speichern, wenn gewünscht
   }
+}
 
-  // Parteien – C: contract_metadata.parties als Objekt {controller, processor, country, processor_dpo}
-  const partiesC: { rolle: string; name: string; land?: string }[] = [];
-  const pc = input?.contract_metadata?.parties;
-  if (pc && typeof pc === "object" && !Array.isArray(pc)) {
-    if (pc.controller) partiesC.push({ rolle: "Verantwortlicher", name: String(pc.controller) });
-    if (pc.processor) {
-      const land = pc.country || pc.processor_country || "";
-      partiesC.push({ rolle: "Auftragsverarbeiter", name: String(pc.processor), land });
+// Parteien – C: contract_metadata.parties als Objekt {controller, processor, country, processor_dpo}
+const partiesC: { rolle: string; name: string; land?: string }[] = [];
+const pc = input?.contract_metadata?.parties;
+if (pc && typeof pc === "object" && !Array.isArray(pc)) {
+  if (pc.controller) {
+    partiesC.push({ rolle: "Verantwortlicher", name: String(pc.controller), land: pc.country || pc.controller_country || "" });
+  } else {
+    // Wenn controller fehlt, aber es offensichtlich einen Verantwortlichen gibt:
+    // (lassen wir leer; wird gleich sauber mit Defaults aufgefüllt)
+  }
+  if (pc.processor) {
+    partiesC.push({ rolle: "Auftragsverarbeiter", name: String(pc.processor), land: pc.country || pc.processor_country || "" });
+  }
+  // DSB bewusst nicht als Partei listen
+}
+
+// --- NEU: harte Normalisierung + Defaults ---
+const partiesRaw = [...partiesA, ...partiesB, ...partiesC];
+
+// Heuristik: sinnvolle Defaults setzen, Rollen ableiten, Leereinträge filtern
+const parties = partiesRaw
+  .map((p) => {
+    let rolle = (p.rolle || "").trim();
+    let name = (p.name || "").trim();
+    const land = (p.land || "").trim();
+
+    // Rolle ableiten, wenn leer
+    if (!rolle) {
+      const n = name.toLowerCase();
+      if (/\bverantwortlich|controller\b/.test(n)) rolle = "Verantwortlicher";
+      else if (/\bauftragsverarbeiter|processor\b/.test(n)) rolle = "Auftragsverarbeiter";
+      else if (/\bgmbh|ag|ug|kg|sarl|limited|inc|gbr\b/.test(n)) rolle = "Auftragsverarbeiter";
     }
-    if (pc.processor_dpo)
-      partiesC.push({ rolle: "Datenschutzbeauftragter (AV)", name: String(pc.processor_dpo) });
-  }
 
-  // DSB (Datenschutzbeauftragter) aus der Anzeige filtern
-  const parties = [...partiesA, ...partiesB, ...partiesC].filter(
-    (p) => !/^datenschutzbeauftragter/i.test(p.rolle || "")
-  );
+    // Namen defaulten, wenn leer
+    if (!name) {
+      if (rolle === "Verantwortlicher") name = "Auftraggeber (nicht namentlich genannt)";
+      else if (rolle === "Auftragsverarbeiter") name = "Auftragsverarbeiter (nicht namentlich genannt)";
+      else name = "Partei (nicht namentlich genannt)";
+    }
+
+    return { rolle, name, land };
+  })
+  // DSB (falls doch irgendwo geraten) rausfiltern
+  .filter((p) => !/^datenschutzbeauftragter/i.test(p.rolle))
+  // nur sinnvolle Einträge behalten
+  .filter((p) => p.rolle && p.name);
 
   // Art. 28
   const a28src =
@@ -639,15 +663,15 @@ export default function Page() {
               <div className="muted">Parteien</div>
               {!data || toArray(data.parties).length === 0 ? (
                 <div className="muted">—</div>
-              ) : (
+                ) : (
                 <ul className="mb-0">
-                  {toArray<any>(data.parties).map((p, i) => (
+                    {toArray<any>(data.parties).map((p, i) => (
                     <li key={i} className="text-white">
-                      {p.rolle}: {p.name} {p.land ? `(${p.land})` : ""}
+                        <span className="fw-semibold">{p.rolle}</span>: {p.name} {p.land ? `(${p.land})` : ""}
                     </li>
-                  ))}
+                    ))}
                 </ul>
-              )}
+                )}
             </div>
           </div>
         </div>

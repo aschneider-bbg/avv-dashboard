@@ -5,8 +5,9 @@ import pdf from "pdf-parse";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/* ========================= Utils: PDF & Chunking ========================= */
+/* ========================= Utils: PDF & deterministisches Chunking ========================= */
 
+/** PDF → Fließtext (wie bisher) */
 async function pdfToText(file: File): Promise<string> {
   const buf = Buffer.from(await file.arrayBuffer());
   const data = await pdf(buf).catch(() => null);
@@ -20,86 +21,86 @@ async function pdfToText(file: File): Promise<string> {
   return text;
 }
 
+/** grobe Token-Schätzung (stabil) */
 function estimateTokens(s: string): number {
   return Math.ceil(s.length / 4);
 }
 
+/** harter Zeichenschnitt */
 function hardSplitByChars(s: string, maxChars: number): string[] {
   const out: string[] = [];
   for (let i = 0; i < s.length; i += maxChars) out.push(s.slice(i, i + maxChars));
   return out;
 }
 
-function semanticChunkText(
+/**
+ * ========= Deterministisches Chunking =========
+ * - Keine Heuristik, keine Überschriften-Erkennung, kein späteres „Mergen“
+ * - Wir laufen linear über den Text und schneiden strikt nach Ziel-/Max-Token
+ * - Einzelblöcke, die zu groß sind, werden hart per Zeichen geschnitten
+ * - Jeder Chunk erhält einen stabilen Header: "BLOCK i/n"
+ */
+function chunkTextDeterministic(
   text: string,
-  targetTokens = 8_000,
-  hardMaxTokens = 9_500
+  targetTokens = 7_000,   // konservativer als früher (Platz für Instruktionen/Antworten)
+  hardMaxTokens = 8_000,  // absolute Obergrenze
+  maxChunks = 28          // Schutz vor zu vielen Calls bei sehr großen PDFs
 ): string[] {
-  const strongDelim = new RegExp(
-    [
-      String.raw`(?=^.{0,6}(?:Kapitel|Abschnitt|Artikel|Art\.|§|Ziffer|Anhang)\b)`,
-      String.raw`(?=^\s*(?:[IVXLC]+\.)\s)`,
-      String.raw`(?=^\s*(?:\d{1,2}\.)\s)`,
-      String.raw`(?=^\s*[A-ZÄÖÜ][A-ZÄÖÜ \-/]{5,}\s*$)`,
-    ].join("|"),
-    "m"
-  );
+  if (!text.trim()) return [];
 
-  let blocks = text.split(strongDelim).map(s => s.trim()).filter(Boolean);
-  if (blocks.length <= 1) {
-    blocks = text.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
-  }
+  // Wir splitten NUR an Doppel-Newlines grob vor, aber OHNE Merge-Heuristik
+  const units = text.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
 
-  const refined: string[] = [];
-  for (const b of blocks) {
-    if (estimateTokens(b) <= hardMaxTokens) {
-      refined.push(b);
-    } else {
-      const paras = b.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
-      let buf: string[] = [];
-      let bufTokens = 0;
-      for (const p of paras) {
-        const t = estimateTokens(p) + 2;
-        if (bufTokens + t > targetTokens && buf.length) {
-          refined.push(buf.join("\n\n"));
-          buf = [p];
-          bufTokens = estimateTokens(p);
-        } else if (t > hardMaxTokens) {
-          const chunks = hardSplitByChars(p, hardMaxTokens * 4);
-          refined.push(...chunks);
-          buf = [];
-          bufTokens = 0;
-        } else {
-          buf.push(p);
-          bufTokens += t;
-        }
+  const chunks: string[] = [];
+  let buf = "";
+  let bufTok = 0;
+
+  const flush = () => {
+    if (!buf) return;
+    chunks.push(buf.trim());
+    buf = "";
+    bufTok = 0;
+  };
+
+  for (const u of units) {
+    const t = estimateTokens(u) + 2; // +2 für Trenner
+    if (t > hardMaxTokens) {
+      // Unit selbst zu groß → hart per Zeichen splitten
+      flush();
+      const parts = hardSplitByChars(u, hardMaxTokens * 4 /* chars ≈ 4/token */);
+      for (const part of parts) {
+        chunks.push(part.trim());
+        if (chunks.length >= maxChunks) break;
       }
-      if (buf.length) refined.push(buf.join("\n\n"));
-    }
-  }
-
-  const MIN_TOK = 1_000;
-  const merged: string[] = [];
-  let cursor = "";
-  let curTok = 0;
-  for (const seg of refined) {
-    const t = estimateTokens(seg);
-    if (!cursor) {
-      cursor = seg;
-      curTok = t;
+      if (chunks.length >= maxChunks) break;
       continue;
     }
-    if (curTok < MIN_TOK && curTok + t <= hardMaxTokens) {
-      cursor = cursor + "\n\n" + seg;
-      curTok += t;
-    } else {
-      merged.push(cursor);
-      cursor = seg;
-      curTok = t;
+
+    if (bufTok === 0) {
+      buf = u;
+      bufTok = t;
+      continue;
     }
+
+    // passt noch in Zielgröße?
+    if (bufTok + t <= targetTokens) {
+      buf += "\n\n" + u;
+      bufTok += t;
+    } else {
+      // Puffer schließen
+      flush();
+      // neue Gruppe starten
+      buf = u;
+      bufTok = t;
+    }
+
+    if (chunks.length >= maxChunks) break;
   }
-  if (cursor) merged.push(cursor);
-  return merged;
+  flush();
+
+  // Header hinzufügen: stabilisiert das Verhalten im Agent-Kontext
+  const total = chunks.length;
+  return chunks.slice(0, maxChunks).map((c, i) => `BLOCK ${i + 1}/${Math.min(total, maxChunks)}\n\n${c}`);
 }
 
 /* ========================= Utils: JSON & Helpers ========================= */
@@ -253,7 +254,7 @@ function reconcileAndScore(raw: any) {
   return out;
 }
 
-/* ========================= Agent ========================= */
+/* ========================= Agent (deine Instructions bleiben unverändert) ========================= */
 
 const avvCheckAgent = new Agent({
   name: "AVV-Check-Agent",
@@ -411,7 +412,7 @@ Zusatzregeln
 • Keine Meta-Kommentare, keine Redundanzen.
 `,
   model: "gpt-5-chat-latest",
-  modelSettings: { temperature: 0, maxTokens: 4000, topP: 1, store: false },
+  modelSettings: { temperature: 0, seed: 42, maxTokens: 4000, topP: 1, store: false },
 });
 
 /* ========================= Backoff ========================= */
@@ -455,22 +456,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Kein Text übergeben." }, { status: 400 });
     }
 
-    // 1) Chunking
-    const chunks = semanticChunkText(inputText, 8_000, 9_500);
+    // 1) Deterministisches Chunking (ersetzt semantische Heuristik)
+    const chunks = chunkTextDeterministic(inputText, 7_000, 8_000, 28);
 
     // 2) Chunk-Analysen
     const runner = new Runner();
     const partialResults: any[] = [];
     for (let i = 0; i < chunks.length; i++) {
-      const input = `Teil ${i + 1}/${chunks.length}:\n\n${chunks[i]}`;
+      const input = chunks[i]; // enthält bereits "BLOCK i/n" Header
       const res = await withTrace(`chunk-${i + 1}`, async () =>
         runWithBackoff(() =>
           runner.run(avvCheckAgent, [{ role: "user", content: [{ type: "input_text", text: input }] }])
         )
       );
       if (res?.finalOutput) {
-        const parsed = extractJson(res.finalOutput);
-        partialResults.push(parsed);
+        try {
+          const parsed = extractJson(res.finalOutput);
+          partialResults.push(parsed);
+        } catch {
+          // Falls ein einzelner Chunk kein sauberes JSON lieferte, überspringen
+        }
       }
     }
 

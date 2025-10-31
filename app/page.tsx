@@ -51,13 +51,15 @@ function avv_buildComplianceTooltip(
   extras: Record<string, any> | undefined,
   details: Record<string, any> | undefined
 ): string {
-  const order = Object.keys(avv_WEIGHTS);
+  const order = Object.keys(avv_WEIGHTS); // EN-Keys in fixer Reihenfolge
   const rows: string[] = [];
   let base = 0;
 
-  for (const key of order) {
-    const weight = avv_WEIGHTS[key];
-    const status = a28?.[key]?.status ?? "";
+  for (const keyEn of order) {
+    // << Fix: EN -> DE Kanon auflösen
+    const canon = (EN_TO_CANON as any)[keyEn] ?? keyEn; // z.B. "instructions_only" -> "weisung"
+    const weight = avv_WEIGHTS[keyEn];
+    const status = a28?.[canon]?.status ?? "";
     const factor = avv_statusToFactor(status);
     const pts = weight * factor;
     base += pts;
@@ -72,11 +74,11 @@ function avv_buildComplianceTooltip(
         : status || "—";
 
     rows.push(
-      `• ${avv_LABELS_DE[key]} — Gewicht ${weight} × Faktor ${fmt(factor)} (${statusDe}) = ${fmt(pts)}`
+      `• ${avv_LABELS_DE[keyEn]} — Gewicht ${weight} × Faktor ${fmt(factor)} (${statusDe}) = ${fmt(pts)}`
     );
   }
 
-  // Bonus/Abzüge: wenn Backend liefert → nehmen; sonst leichte Heuristik
+  // Bonus/Abzüge wie gehabt
   let bonus = avv_num(details?.bonus) ?? 0;
   let abzug = 0;
   const p1 = avv_num(details?.penalties);
@@ -106,6 +108,7 @@ function avv_buildComplianceTooltip(
     `\nSumme Basispunkte: ${fmt(base)}\nGesamt: ${fmt(base)} + ${fmt(bonus)} − ${fmt(abzug)} = ${fmt(total)} / 100`
   );
 }
+
 
 function avv_buildRiskTooltip(
   riskOverall: number | null | undefined,

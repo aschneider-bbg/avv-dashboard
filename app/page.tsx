@@ -1,6 +1,52 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+/** ===== Utils ===== */
+const isNum = (v: any): v is number => typeof v === "number" && !Number.isNaN(v);
+
+/** Labels für Compliance-Details (Agent liefert keys in EN) */
+const DETAILS_LABELS: Record<string, string> = {
+  instructions_only: "Weisung (nur auf dokumentierte Weisung)",
+  confidentiality: "Vertraulichkeit",
+  security_TOMs: "Technisch-organisatorische Maßnahmen",
+  subprocessors: "Unterauftragsverarbeiter",
+  data_subject_rights_support: "Unterstützung Betroffenenrechte",
+  breach_support: "Unterstützung bei Datenschutzverletzungen",
+  deletion_return: "Löschung/Rückgabe nach Vertragsende",
+  audit_rights: "Audit- und Nachweisrechte",
+  bonus: "Bonus",
+  penalties: "Abzüge",
+  corrections: "Korrekturen",
+};
+
+/** Baut den Tooltip-Text für die Compliance-Details hübsch zusammen */
+function buildComplianceDetailsTooltip(details?: Record<string, any>) {
+  if (!details || typeof details !== "object") return "—";
+  const order = [
+    "instructions_only",
+    "confidentiality",
+    "security_TOMs",
+    "subprocessors",
+    "data_subject_rights_support",
+    "breach_support",
+    "deletion_return",
+    "audit_rights",
+    "bonus",
+    "penalties",
+    "corrections",
+  ];
+  const lines: string[] = [];
+  for (const k of order) {
+    if (k in details && isNum(details[k])) {
+      const label = DETAILS_LABELS[k] ?? k.replace(/_/g, " ");
+      const val = details[k];
+      lines.push(`${label}: ${val}`);
+    }
+  }
+  if (lines.length === 0) return "—";
+  return `Begründung Compliance\n\n${lines.map(l => `• ${l}`).join("\n")}`;
+}
+
 /* ---------- Hilfsfunktionen (robust) ---------- */
 const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : []);
 const isNum = (v: any) => typeof v === "number" && Number.isFinite(v);
@@ -116,7 +162,9 @@ function normalize(input: any) {
     }
   }
 
-  const parties = [...partiesA, ...partiesB, ...partiesC];
+  const parties = [...partiesA, ...partiesB, ...partiesC].filter(
+  (p) => !/^datenschutzbeauftragter/i.test(p.rolle || "")
+);
 
   // Art. 28
   const a28src = input?.prüfung?.art_28 ?? input?.findings?.art_28 ?? input?.article_28_analysis ?? {};
@@ -362,7 +410,17 @@ export default function Page() {
             <div className="d-flex flex-wrap gap-3">
               {/* Compliance */}
               <div className="card p-3" style={{ minWidth: 200 }}>
-                <div className="muted">Compliance</div>
+                <div className="muted">
+                    Compliance{" "}
+                    {isNum(raw?.compliance_score?.overall) && (
+                        <i
+                        className="bi bi-info-circle ms-1"
+                        style={{ cursor: "help" }}
+                        title={buildComplianceDetailsTooltip(raw?.compliance_score?.details)}
+                        aria-label="Scoring-Details"
+                        />
+                )}
+                </div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
                   {compliance == null ? "—" : (compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht")}
@@ -378,7 +436,19 @@ export default function Page() {
 
               {/* Risiko */}
               <div className="card p-3" style={{ minWidth: 200 }}>
-                <div className="muted">Risiko</div>
+                <div className="muted">
+                    Risiko{" "}
+                    {(raw?.risk_score?.rationale || data?.riskRationale) && (
+                        <i
+                        className="bi bi-info-circle ms-1"
+                        style={{ cursor: "help" }}
+                        title={`Begründung Risiko\n\n${(raw?.risk_score?.rationale || data?.riskRationale || "—")
+                            .toString()
+                            .trim()}`}
+                        aria-label="Risiko-Begründung"
+                        />
+                    )}
+                </div>
                 <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
                   {risk == null ? "—" : (risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch")}

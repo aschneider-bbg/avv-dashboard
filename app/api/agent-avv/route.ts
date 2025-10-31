@@ -106,16 +106,161 @@ function hardSplitByChars(s: string, maxChars: number): string[] {
 /* ========================= JSON-Extraction ========================= */
 function extractJson(output: string): any {
   if (!output) throw new Error("Leere Antwort vom Agent.");
-  const cleaned = output.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (match) {
-    try {
-      return JSON.parse(match[0]);
-    } catch (err) {
-      console.warn("JSON-Parsing-Warnung:", err);
+  const cleaned = output.replace(/```(?:json)?/gi, "").replace(/```/g, "");
+  const matches = cleaned.match(/\{[\s\S]*\}/g);
+  if (!matches || matches.length === 0) throw new Error("Kein JSON-Block gefunden.");
+  // nimm den größten Block – meist der finale
+  const biggest = matches.sort((a, b) => b.length - a.length)[0];
+  return JSON.parse(biggest);
+}
+
+/* === Scoring-Konstanten === */
+const WEIGHTS: Record<string, number> = {
+  instructions_only: 15,
+  confidentiality: 10,
+  security_TOMs: 20,
+  subprocessors: 15,
+  data_subject_rights_support: 10,
+  breach_support: 10,
+  deletion_return: 10,
+  audit_rights: 10,
+};
+
+const STATUS_TO_FACTOR = (s?: string) => {
+  const v = (s || "").toLowerCase();
+  if (v === "met" || v === "erfüllt") return 1;
+  if (v === "partial" || v === "teilweise") return 0.5;
+  return 0;
+};
+
+const isArray = (v: any): v is any[] => Array.isArray(v);
+const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : []);
+const trimQuote = (s: string) => s.replace(/\s+/g, " ").slice(0, 240);
+
+/* === Mapping für Findings → gewünschtes Schema === */
+const A28_KEYS = new Set([
+  "instructions_only","confidentiality","security_TOMs","subprocessors",
+  "data_subject_rights_support","breach_support","deletion_return","audit_rights",
+]);
+
+const EXTRA_KEYS = new Set([
+  "international_transfers","liability_cap","jurisdiction",
+]);
+
+/* === Reconciliation & Re-Score === */
+function reconcileAndScore(raw: any) {
+  const out: any = {
+    executive_summary: raw?.executive_summary ?? "",
+    contract_metadata: {
+      title: raw?.contract_metadata?.title ?? "",
+      date: raw?.contract_metadata?.date ?? "",
+      parties: raw?.contract_metadata?.parties ?? raw?.parties ?? null,
+    },
+    article_28_analysis: {},
+    additional_clauses: {},
+    recommended_actions: [],
+    compliance_score: { overall: 0, details: {} as Record<string, number> },
+    risk_score: { overall: 0, rationale: raw?.risk_score?.rationale ?? "" },
+    version: "2025-10-31-stable2",
+  };
+
+  /* ---- Parteien normalisieren (Array ODER Objekt) ---- */
+  const p = out.contract_metadata.parties;
+  if (p && !isArray(p) && typeof p === "object") {
+    // Objektform → in schönes Array für Frontend
+    const arr: any[] = [];
+    if (p.controller) arr.push({ rolle: "Verantwortlicher", name: String(p.controller), land: p.country || "DE" });
+    if (p.processor)  arr.push({ rolle: "Auftragsverarbeiter", name: String(p.processor),  land: p.country || "DE" });
+    if (p.processor_dpo) {
+      // DSB nicht als Partei zurückgeben – nur Meta
+      out.contract_metadata.processor_dpo = String(p.processor_dpo);
+    }
+    out.contract_metadata.parties = arr;
+  } else if (!isArray(p)) {
+    out.contract_metadata.parties = [];
+  }
+
+  /* ---- Findings aus beliebigen Feldern einsammeln ---- */
+  const buckets: Record<string, any> = {};
+  const sources = [raw?.article_28_analysis, raw?.additional_clauses, raw?.findings];
+  for (const src of sources) {
+    if (!src || typeof src !== "object") continue;
+    for (const [k, v] of Object.entries(src)) {
+      if (!v || typeof v !== "object") continue;
+      buckets[k] = {
+        status: (v as any).status,
+        evidence: toArray<any>((v as any).evidence ?? (v as any).belege)
+          .slice(0, 2)
+          .map((e: any) => ({ quote: trimQuote(String(e?.quote ?? "")), page: Number.isInteger(e?.page) ? e.page : undefined })),
+      };
     }
   }
-  throw new Error("Konnte keinen gültigen JSON-Block aus der Agent-Antwort extrahieren.");
+
+  /* ---- In Zielstruktur legen ---- */
+  for (const key of Object.keys(buckets)) {
+    const node = buckets[key];
+    if (A28_KEYS.has(key)) out.article_28_analysis[key] = node;
+    else if (EXTRA_KEYS.has(key)) out.additional_clauses[key] = node;
+  }
+
+  /* ---- Actions vereinheitlichen ---- */
+  const acts = [
+    ...toArray<any>(raw?.recommended_actions),
+    ...toArray<any>(raw?.actions),
+  ];
+  out.recommended_actions = acts.map(a => ({
+    category: a.category ?? a.key ?? a.type ?? "",
+    severity: a.severity ?? "medium",
+    action: a.action ?? a.recommendation ?? a.suggested_clause ?? "",
+  })).filter(a => a.category && a.action);
+
+  /* ---- Compliance neu berechnen (deterministisch) ---- */
+  let base = 0;
+  const details: Record<string, number> = {};
+  for (const [k, weight] of Object.entries(WEIGHTS)) {
+    const status = out.article_28_analysis?.[k]?.status;
+    const factor = STATUS_TO_FACTOR(status);
+    const pts = weight * factor;
+    details[k] = pts;
+    base += pts;
+  }
+
+  /* ---- Bonus aus Zusatzklauseln ---- */
+  let bonus = 0;
+  const intl = out.additional_clauses?.international_transfers?.status;
+  if (intl === "met") bonus += 5;
+  else if (intl === "present") bonus += 3;
+  else if (intl === "partial") bonus += 2;
+
+  const liab = out.additional_clauses?.liability_cap?.status;
+  if (liab === "met" || liab === "present") bonus += 2;
+
+  const juris = out.additional_clauses?.jurisdiction?.status;
+  if (juris === "met" || juris === "present") bonus += 2;
+
+  /* ---- Korrekturen (Abzüge) nach Regelwerk ---- */
+  let corrections = 0;
+  const mediumOrHigh = out.recommended_actions.filter((a: any) => a.severity === "medium" || a.severity === "high").length;
+  if (mediumOrHigh >= 3) corrections += 5;
+  if (out.recommended_actions.some((a: any) => a.severity === "high")) corrections += 5;
+
+  if (out.additional_clauses?.liability_cap?.status === "missing" || out.additional_clauses?.liability_cap?.status === "not_found") {
+    corrections += 5;
+  }
+  if (out.additional_clauses?.international_transfers?.status === "missing") {
+    corrections += 3;
+  }
+
+  const total = Math.max(0, Math.min(100, Math.round(base + bonus - corrections)));
+
+  out.compliance_score.details = { ...details, bonus, penalties: 0, corrections };
+  out.compliance_score.overall = total;
+
+  /* ---- Risiko ableiten, Begründung beibehalten falls vorhanden ---- */
+  const riskFromAgent = typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : null;
+  out.risk_score.overall = Number.isFinite(riskFromAgent) ? riskFromAgent : (100 - total);
+
+  return out;
 }
 
 /* ========================= Stabilisierung / Normalisierung ========================= */
@@ -505,9 +650,11 @@ export async function POST(req: NextRequest) {
 
     // 4) Parse & Reconcile (HARTE STABILISIERUNG)
     const finalJson = extractJson(merged.finalOutput);
-    const stable = reconcileFinal(finalJson);
 
-    return NextResponse.json(stable);
+    // ZWINGE Konsistenz & fixe Scores:
+    const reconciled = reconcileAndScore(finalJson);
+
+    return NextResponse.json(reconciled);
   } catch (e: any) {
     return NextResponse.json(
       { error: "Agent-Serverfehler", details: e?.message ?? String(e) },

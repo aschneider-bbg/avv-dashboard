@@ -426,6 +426,29 @@ export default function Page() {
   const compLabel = compliance == null ? "—" : compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht";
   const riskLabel = risk == null ? "—" : risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch";
 
+  // Tooltips nur innerhalb des Components berechnen (damit data/raw im Scope sind)
+const complianceTooltip = useMemo(() => {
+  return avv_buildComplianceTooltip(
+    data?.a28 || {},
+    data?.extras || {},
+    raw?.compliance_score?.details
+  );
+}, [data?.a28, data?.extras, raw?.compliance_score?.details]);
+
+const riskTooltip = useMemo(() => {
+  const riskOverall =
+    typeof raw?.risk_score?.overall === "number"
+      ? raw.risk_score.overall
+      : typeof risk === "number"
+      ? risk
+      : null;
+
+  const rationale = raw?.risk_score?.rationale || data?.riskRationale || "";
+  const complianceOverall = typeof compliance === "number" ? compliance : null;
+
+  return avv_buildRiskTooltip(riskOverall, rationale, complianceOverall);
+}, [raw?.risk_score, data?.riskRationale, compliance]);
+
   /* ---- Chart stabilisieren ---- */
   const donut = useMemo<number[]>(() => [kpis.erfüllt, kpis.teilweise, kpis.fehlt], [kpis]);
   useEffect(() => {
@@ -541,7 +564,7 @@ export default function Page() {
                 <div className="muted">
                     Compliance{" "}
                     <span className="ms-1" title={complianceTooltip} aria-label="Details">
-                    <i className="bi bi-info-circle" />
+                        <i className="bi bi-info-circle" />
                     </span>
                 </div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
@@ -562,7 +585,7 @@ export default function Page() {
                 <div className="muted">
                     Risiko{" "}
                     <span className="ms-1" title={riskTooltip} aria-label="Details">
-                    <i className="bi bi-info-circle" />
+                        <i className="bi bi-info-circle" />
                     </span>
                 </div>
                 <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>

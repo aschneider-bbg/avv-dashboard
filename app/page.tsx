@@ -4,8 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 /** ===== Utils ===== */
 const isNum = (v: any): v is number => typeof v === "number" && !Number.isNaN(v);
 
-// Gewichte nach deinem Schema (Summe 100)
-const WEIGHTS: Record<string, number> = {
+/** ===== AVV Utils (konfliktfrei, eindeutige Namen) ===== */
+
+// Gewichte gemäß deines Schemas (Summe 100)
+const avv_WEIGHTS: Record<string, number> = {
   instructions_only: 15,
   confidentiality: 10,
   security_TOMs: 20,
@@ -16,7 +18,8 @@ const WEIGHTS: Record<string, number> = {
   audit_rights: 10,
 };
 
-const LABELS_DE: Record<string, string> = {
+// DE-Labels für die Kategorien
+const avv_LABELS_DE: Record<string, string> = {
   instructions_only: "Weisung (nur dokumentierte Weisung)",
   confidentiality: "Vertraulichkeit",
   security_TOMs: "Technisch-organisatorische Maßnahmen",
@@ -25,9 +28,20 @@ const LABELS_DE: Record<string, string> = {
   breach_support: "Unterstützung bei Datenschutzverletzungen",
   deletion_return: "Löschung/Rückgabe nach Vertragsende",
   audit_rights: "Audit- und Nachweisrechte",
+  bonus: "Bonus",
+  penalties: "Abzüge",
+  corrections: "Korrekturen",
 };
 
-const statusToFactor = (s?: string) => {
+// defensiv, kollisionsfrei
+const avv_num = (v: unknown): number | null => {
+  const n = typeof v === "string" ? Number(v) : (v as number);
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+};
+const avv_fmt = (n: number) => (Number.isInteger(n) ? `${n}` : n.toFixed(1));
+
+// Status → Faktor (met=1, partial=0.5, missing=0)
+const avv_statusToFactor = (s?: string): number => {
   if (!s) return 0;
   const k = s.toLowerCase();
   if (k === "met" || k === "erfüllt") return 1;
@@ -52,20 +66,20 @@ const DETAILS_LABELS: Record<string, string> = {
   corrections: "Korrekturen",
 };
 
-function buildComplianceTooltip(
+/** Baut den verständlichen Compliance-Tooltip: Gewicht × Faktor = Punkte, dann Bonus/Abzüge, Summe */
+function avv_buildComplianceTooltip(
   a28: Record<string, { status?: string }>,
-  extras: any,
-  details?: Record<string, any>
-) {
-  // Grundpunkte aus Kategorien
-  const order = Object.keys(WEIGHTS);
+  extras: Record<string, any> | undefined,
+  details: Record<string, any> | undefined
+): string {
+  const order = Object.keys(avv_WEIGHTS);
   const lines: string[] = [];
   let base = 0;
 
   for (const key of order) {
-    const weight = WEIGHTS[key];
+    const weight = avv_WEIGHTS[key];
     const status = a28?.[key]?.status ?? "";
-    const f = statusToFactor(status);
+    const f = avv_statusToFactor(status);
     const pts = weight * f;
     base += pts;
 
@@ -74,19 +88,18 @@ function buildComplianceTooltip(
       status?.toLowerCase() === "partial" ? "teilweise" :
       status?.toLowerCase() === "missing" ? "fehlt" : (status || "—");
 
-    lines.push(`• ${LABELS_DE[key]}: ${weight} × ${fmt(f)} = ${fmt(pts)}  (${statusDe})`);
+    lines.push(`• ${avv_LABELS_DE[key]}: ${weight} × ${avv_fmt(f)} = ${avv_fmt(pts)}  (${statusDe})`);
   }
 
-  // Bonus / Abzüge
-  // Quelle 1: vom Backend geliefert (bevorzugt)
-  let bonus = 0;
+  // Bonus/Abzüge: zuerst Backend-Details, sonst Heuristik (Fallback)
+  let bonus = avv_num(details?.bonus) ?? 0;
   let abzug = 0;
-  if (details && typeof details === "object") {
-    if (typeof details.bonus === "number") bonus = details.bonus;
-    if (typeof details.penalties === "number") abzug += details.penalties;
-    if (typeof details.corrections === "number") abzug += Math.abs(details.corrections);
-  } else {
-    // Quelle 2 (Fallback): aus Zusatzklauseln wie bisher heuristisch
+  const p1 = avv_num(details?.penalties);
+  const p2 = avv_num(details?.corrections);
+  if (p1) abzug += p1;
+  if (p2) abzug += Math.abs(p2);
+
+  if (!details) {
     const intl = extras?.["internationale_übermittlungen"]?.status;
     if (intl === "erfüllt") bonus += 5; else if (intl === "teilweise") bonus += 2; else if (intl === "vorhanden") bonus += 3;
     const liab = extras?.["haftungsbegrenzung"]?.status;
@@ -98,19 +111,28 @@ function buildComplianceTooltip(
   const total = Math.max(0, Math.min(100, Math.round(base + bonus - abzug)));
 
   return (
-    `Begründung Compliance\n\n` +
-    lines.join("\n") +
-    `\n\nBonus: +${fmt(bonus)}   Abzüge: −${fmt(abzug)}` +
-    `\nGesamt: ${fmt(base)} + ${fmt(bonus)} − ${fmt(abzug)} = ${fmt(total)} / 100`
+`Begründung Compliance
+
+${lines.join("\n")}
+
+${avv_LABELS_DE.bonus}: +${avv_fmt(bonus)}   ${avv_LABELS_DE.penalties}: −${avv_fmt(abzug)}
+Gesamt: ${avv_fmt(base)} + ${avv_fmt(bonus)} − ${avv_fmt(abzug)} = ${avv_fmt(total)} / 100`
   );
 }
 
-function buildRiskTooltip(riskOverall?: number, rationale?: string, complianceOverall?: number) {
+/** Risiko-Tooltip: Rationale + (falls ableitbar) Hinweis 100 − Compliance */
+function avv_buildRiskTooltip(
+  riskOverall: number | null | undefined,
+  rationale: string | null | undefined,
+  complianceOverall: number | null | undefined
+): string {
   const rationaleText = (rationale || "—").trim();
-  const derived = (typeof complianceOverall === "number")
-    ? `Hinweis: Risiko ≈ 100 − Compliance → ${100 - complianceOverall}`
+  const derived = typeof complianceOverall === "number"
+    ? `\n\nHinweis: Risiko ≈ 100 − Compliance → ${100 - complianceOverall}`
     : "";
-  return `Begründung Risiko\n\n${rationaleText}\n\n${derived}`.trim();
+  const head = "Begründung Risiko";
+  const scoreLine = typeof riskOverall === "number" ? `\nScore: ${riskOverall}/100` : "";
+  return `${head}\n\n${rationaleText}${scoreLine}${derived}`.trim();
 }
 
 /** Baut den Tooltip-Text für die Compliance-Details hübsch zusammen */
@@ -142,15 +164,15 @@ function buildComplianceDetailsTooltip(details?: Record<string, any>) {
 }
 
 // oben im Component-Body, nachdem data/compliance/risk berechnet wurden:
-const complianceTooltip = buildComplianceTooltip(
+const complianceTooltip = avv_buildComplianceTooltip(
   data?.a28 || {},
   data?.extras || {},
   raw?.compliance_score?.details
 );
-const riskTooltip = buildRiskTooltip(
-  (typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : risk ?? undefined) as number | undefined,
-  raw?.risk_score?.rationale || data?.riskRationale,
-  compliance ?? undefined
+const riskTooltip = avv_buildRiskTooltip(
+  typeof raw?.risk_score?.overall === "number" ? raw.risk_score.overall : (typeof risk === "number" ? risk : null),
+  raw?.risk_score?.rationale || data?.riskRationale || "",
+  typeof compliance === "number" ? compliance : null
 );
 
 /* ---------- Hilfsfunktionen (robust) ---------- */
@@ -519,7 +541,7 @@ export default function Page() {
                 <div className="muted">
                     Compliance{" "}
                     <span className="ms-1" title={complianceTooltip} aria-label="Details">
-                        <i className="bi bi-info-circle" />
+                    <i className="bi bi-info-circle" />
                     </span>
                 </div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
@@ -540,7 +562,7 @@ export default function Page() {
                 <div className="muted">
                     Risiko{" "}
                     <span className="ms-1" title={riskTooltip} aria-label="Details">
-                        <i className="bi bi-info-circle" />
+                    <i className="bi bi-info-circle" />
                     </span>
                 </div>
                 <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>

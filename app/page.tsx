@@ -49,15 +49,15 @@ const avv_statusToFactor = (s?: string): number => {
 function avv_buildComplianceTooltip(
   a28: Record<string, { status?: string }>,
   extras: Record<string, any> | undefined,
-  details: Record<string, any> | undefined
+  details: Record<string, any> | undefined,
+  providedOverall?: number | null
 ): string {
-  const order = Object.keys(avv_WEIGHTS); // EN-Keys in fixer Reihenfolge
+  const order = Object.keys(avv_WEIGHTS); // EN-Keys
   const rows: string[] = [];
   let base = 0;
 
   for (const keyEn of order) {
-    // << Fix: EN -> DE Kanon auflösen
-    const canon = (EN_TO_CANON as any)[keyEn] ?? keyEn; // z.B. "instructions_only" -> "weisung"
+    const canon = (EN_TO_CANON as any)[keyEn] ?? keyEn; // EN -> DE
     const weight = avv_WEIGHTS[keyEn];
     const status = a28?.[canon]?.status ?? "";
     const factor = avv_statusToFactor(status);
@@ -78,7 +78,8 @@ function avv_buildComplianceTooltip(
     );
   }
 
-  // Bonus/Abzüge wie gehabt
+  // Bonus / Abzüge primär aus details übernehmen,
+  // sonst Heuristik aus Zusatzklauseln (Fallback)
   let bonus = avv_num(details?.bonus) ?? 0;
   let abzug = 0;
   const p1 = avv_num(details?.penalties);
@@ -99,13 +100,22 @@ function avv_buildComplianceTooltip(
     if (juris === "erfüllt" || juris === "vorhanden") bonus += 2;
   }
 
-  const total = Math.max(0, Math.min(100, Math.round(base + bonus - abzug)));
+  const calcTotal = Math.max(0, Math.min(100, Math.round(base + bonus - abzug)));
+  const finalTotal =
+    typeof providedOverall === "number" ? providedOverall : calcTotal;
+
+  const mismatch =
+    typeof providedOverall === "number" && Math.abs(providedOverall - calcTotal) >= 1;
 
   return (
     `Begründung Compliance\n\n` +
     rows.join("\n") +
     `\n\n${avv_LABELS_DE.bonus}: +${fmt(bonus)}     ${avv_LABELS_DE.penalties}: −${fmt(abzug)}` +
-    `\nSumme Basispunkte: ${fmt(base)}\nGesamt: ${fmt(base)} + ${fmt(bonus)} − ${fmt(abzug)} = ${fmt(total)} / 100`
+    `\nSumme Basispunkte: ${fmt(base)}` +
+    `\nGesamt (berechnet aus Details): ${fmt(base)} + ${fmt(bonus)} − ${fmt(abzug)} = ${fmt(calcTotal)} / 100` +
+    (mismatch
+      ? `\nHinweis: Server meldet Gesamt = ${fmt(providedOverall!)} / 100 (abweichend von der Detailrechnung).`
+      : `\nGesamt: ${fmt(finalTotal)} / 100`)
   );
 }
 
@@ -370,10 +380,17 @@ export default function Page() {
     risk == null ? "text-secondary" : risk <= 20 ? "text-success" : risk <= 40 ? "text-warning" : "text-danger";
 
   /** Tooltips – **innerhalb** der Komponente berechnen */
-  const complianceTooltip = useMemo(
-    () => avv_buildComplianceTooltip(data?.a28 || {}, data?.extras || {}, raw?.compliance_score?.details),
-    [data?.a28, data?.extras, raw?.compliance_score?.details]
+ const complianceTooltip = useMemo(() => {
+  const provided = isNum(raw?.compliance_score?.overall)
+    ? (raw!.compliance_score!.overall as number)
+    : null;
+  return avv_buildComplianceTooltip(
+    data?.a28 || {},
+    data?.extras || {},
+    raw?.compliance_score?.details,
+    provided
   );
+}, [data?.a28, data?.extras, raw?.compliance_score?.details, raw?.compliance_score?.overall]);
 
   const riskTooltip = useMemo(() => {
     const riskOverall = isNum(raw?.risk_score?.overall) ? raw!.risk_score!.overall : risk;

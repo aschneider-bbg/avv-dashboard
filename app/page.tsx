@@ -45,11 +45,7 @@ function buildComplianceDetailsTooltip(details?: Record<string, any>) {
   }
   if (lines.length === 0) return "—";
   return `Begründung Compliance\n\n${lines.map(l => `• ${l}`).join("\n")}`;
-}
-
-/* ---------- Hilfsfunktionen (robust) ---------- */
-const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : []);
-const isNum = (v: any) => typeof v === "number" && Number.isFinite(v);
+};
 
 /* ---------- Typen ---------- */
 type Evidence = { quote: string; page?: number };

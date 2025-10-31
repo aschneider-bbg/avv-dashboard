@@ -1,3 +1,10 @@
+<style jsx>{`
+  .kpi-card { min-height: 180px; }
+  @media (min-width: 992px) { /* etwas mehr Luft auf großen Screens */
+    .kpi-card { min-height: 190px; }
+  }
+`}</style>
+
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -500,85 +507,93 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Upload + KPIs */}
-      <div className="card mb-4">
+      {/* Upload + Header-Bereich (stabil) */}
+        <div className="card mb-4">
         <div className="card-body">
-          <div className="d-flex flex-wrap align-items-center justify-content-between">
-            <div className="upload w-100 mb-3 mb-md-0" style={{ maxWidth: 520 }}>
-              <input key={inputKey} type="file" className="form-control" accept=".pdf" onChange={onUpload} />
-              {loading && (
-                <div className="mt-2 d-flex align-items-center gap-2">
-                  <div className="spinner-border spinner-border-sm text-secondary" role="status" aria-label="Analysiere" />
-                  <span className="muted">Analysiere…</span>
+            {/* Upload-Zeile */}
+            <div className="row g-3 mb-3">
+            <div className="col-12">
+                <div className="upload" style={{ maxWidth: 620 }}>
+                <input key={inputKey} type="file" className="form-control" accept=".pdf" onChange={onUpload} />
+                {loading && (
+                    <div className="mt-2 d-flex align-items-center gap-2">
+                    <div className="spinner-border spinner-border-sm text-secondary" role="status" aria-label="Analysiere" />
+                    <span className="muted">Analysiere…</span>
+                    </div>
+                )}
+                {err && <div className="mt-2 text-danger"><i className="bi bi-exclamation-triangle me-2" />{err}</div>}
                 </div>
-              )}
-              {err && (
-                <div className="mt-2 text-danger">
-                  <i className="bi bi-exclamation-triangle me-2" />
-                  {err}
-                </div>
-              )}
+            </div>
             </div>
 
-            <div className="d-flex flex-wrap gap-3">
-              {/* Compliance */}
-              <div className="card p-3" style={{ minWidth: 200 }}>
+            {/* 1. Reihe: KPIs (immer sichtbar, feste Höhe) */}
+            <div className="row g-3 align-items-stretch">
+            {/* Compliance */}
+            <div className="col-12 col-md-6 col-lg-3">
+                <div className="card p-3 kpi-card h-100">
                 <div className="muted">
-                  Compliance{" "}
-                  <span className="ms-1" title={complianceTooltip} aria-label="Details">
+                    Compliance{" "}
+                    <span className="ms-1" title={complianceTooltip} aria-label="Details">
                     <i className="bi bi-info-circle" />
-                  </span>
+                    </span>
                 </div>
                 <div className={`kpi ${compColor}`}>{compliance == null ? "—" : `${compliance}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
-                  {compliance == null ? "—" : compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht"}
+                    {compliance == null ? "—" : (compliance >= 85 ? "Hervorragend" : compliance >= 70 ? "Solide" : compliance >= 50 ? "Kritisch" : "Schlecht")}
                 </div>
-                {compliance == null ? (
-                  <div className="mt-1 small muted">No data</div>
-                ) : (
-                  <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
-                    <div
-                      className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`}
-                      style={{ width: `${compliance}%` }}
-                    />
-                  </div>
-                )}
-              </div>
+                <div className="mt-2">
+                    {compliance == null ? (
+                    <div className="small muted">No data</div>
+                    ) : (
+                    <div className="progress" role="progressbar" aria-valuenow={compliance} aria-valuemin={0} aria-valuemax={100}>
+                        <div className={`progress-bar ${compliance >= 85 ? "bg-success" : compliance >= 70 ? "bg-warning" : "bg-danger"}`} style={{ width: `${compliance}%` }} />
+                    </div>
+                    )}
+                </div>
+                </div>
+            </div>
 
-              {/* Risiko */}
-              <div className="card p-3" style={{ minWidth: 200 }}>
+            {/* Risiko */}
+            <div className="col-12 col-md-6 col-lg-3">
+                <div className="card p-3 kpi-card h-100">
                 <div className="muted">
-                  Risiko{" "}
-                  <span className="ms-1" title={riskTooltip} aria-label="Details">
+                    Risiko{" "}
+                    <span className="ms-1" title={riskTooltip} aria-label="Details">
                     <i className="bi bi-info-circle" />
-                  </span>
+                    </span>
                 </div>
                 <div className={`kpi ${riskColor}`}>{risk == null ? "—" : `${risk}/100`}</div>
                 <div className="small fw-semibold" style={{ color: "#aab0bb" }}>
-                  {risk == null ? "—" : risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch"}
+                    {risk == null ? "—" : (risk <= 15 ? "Sehr gering" : risk <= 30 ? "Begrenzt" : risk <= 60 ? "Erhöht" : "Hoch")}
                 </div>
-                {risk == null ? (
-                  <div className="mt-1 small muted">No data</div>
-                ) : (
-                  <div className="progress" role="progressbar" aria-valuenow={risk} aria-valuemin={0} aria-valuemax={100}>
-                    <div
-                      className={`progress-bar ${risk <= 20 ? "bg-success" : risk <= 40 ? "bg-warning" : "bg-danger"}`}
-                      style={{ width: `${risk}%` }}
-                    />
-                  </div>
-                )}
-              </div>
+                <div className="mt-2">
+                    {risk == null ? (
+                    <div className="small muted">No data</div>
+                    ) : (
+                    <div className="progress" role="progressbar" aria-valuenow={risk} aria-valuemin={0} aria-valuemax={100}>
+                        <div className={`progress-bar ${risk <= 20 ? "bg-success" : risk <= 40 ? "bg-warning" : "bg-danger"}`} style={{ width: `${risk}%` }} />
+                    </div>
+                    )}
+                </div>
+                </div>
+            </div>
 
-              {/* Vertragsinformationen kompakt */}
-              <div className="card p-3" style={{ minWidth: 260 }}>
+            {/* Leerspalten für symmetrisches Grid (optional): füllt auf großen Screens auf */}
+            <div className="col-lg-6 d-none d-lg-block" />
+            </div>
+
+            {/* 2. Reihe: Vertragsinformationen (immer darunter) */}
+            <div className="row g-3 mt-2">
+            <div className="col-12">
+                <div className="card p-3">
                 <div className="muted">Vertrags­informationen</div>
                 <div className="fw-semibold">{data?.meta?.titel || "—"}</div>
                 <div className="muted small">{data?.meta?.datum || "—"}</div>
-              </div>
+                </div>
             </div>
-          </div>
+            </div>
         </div>
-      </div>
+        </div>
 
       {/* Chart + Summary */}
       <div className="row g-3 mb-4">

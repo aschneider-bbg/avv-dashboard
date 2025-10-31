@@ -555,42 +555,30 @@ export default function Page() {
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
                             <div className="card bg-slate-900 p-4 flex flex-col justify-between">
                                 <h3 className="text-lg font-medium text-gray-300">Compliance</h3>
-                                {compliance ? (
-                                    <>
-                                        <div className="text-5xl font-bold text-yellow-400">
-                                            {compliance.overall}/100
-                                        </div>
-                                        <p className="text-gray-400">{compliance.label}</p>
-                                        <div className="w-full bg-gray-700 h-3 rounded-full mt-2">
-                                            <div
-                                                className="h-3 rounded-full bg-yellow-400"
-                                                style={{ width: `${compliance.overall}%` }}
-                                            />
-                                        </div>
-                                    </>
-                                ) : (
-                                    <p className="text-gray-500">No data</p>
-                                )}
+                                <div className="text-5xl font-bold text-yellow-400">
+                                    {compliance == null ? "—" : `${compliance}/100`}
+                                    </div>
+                                    <p className="text-gray-400">{compLabel}</p>
+                                    <div className="w-full bg-gray-700 h-3 rounded-full mt-2">
+                                    <div
+                                        className={`h-3 rounded-full ${compliance == null ? "bg-gray-600" : compliance >= 85 ? "bg-green-600" : compliance >= 70 ? "bg-yellow-500" : "bg-red-600"}`}
+                                        style={{ width: `${compliance ?? 0}%` }}
+                                    />
+                                    </div>
                             </div>
 
                             <div className="card bg-slate-900 p-4 flex flex-col justify-between">
                                 <h3 className="text-lg font-medium text-gray-300">Risiko</h3>
-                                {risk ? (
-                                    <>
-                                        <div className="text-5xl font-bold text-green-400">
-                                            {risk.overall}/100
-                                        </div>
-                                        <p className="text-gray-400">{risk.label}</p>
-                                        <div className="w-full bg-gray-700 h-3 rounded-full mt-2">
-                                            <div
-                                                className="h-3 rounded-full bg-green-400"
-                                                style={{ width: `${risk.overall}%` }}
-                                            />
-                                        </div>
-                                    </>
-                                ) : (
-                                    <p className="text-gray-500">No data</p>
-                                )}
+                                <div className="text-5xl font-bold text-yellow-400">
+                                    {risk == null ? "—" : `${risk}/100`}
+                                    </div>
+                                    <p className="text-gray-400">{riskLabel}</p>
+                                    <div className="w-full bg-gray-700 h-3 rounded-full mt-2">
+                                    <div
+                                        className={`h-3 rounded-full ${risk == null ? "bg-gray-600" : risk <= 20 ? "bg-green-600" : risk <= 40 ? "bg-yellow-500" : "bg-red-600"}`}
+                                        style={{ width: `${risk ?? 0}%` }}
+                                    />
+                                    </div>
                             </div>
                         </div>
 

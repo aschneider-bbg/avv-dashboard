@@ -116,10 +116,6 @@ function extractJson(output: string): any {
   return JSON.parse(biggest);
 }
 
-/* ---------- kleine Helfer (einmalig definiert!) ---------- */
-const isArray = (v: any): v is any[] => Array.isArray(v);
-const toArray = <T,>(v: any): T[] => (Array.isArray(v) ? v : []);
-const trimQuote = (s: string) => s.replace(/\s+/g, " ").slice(0, 240);
 
 /* ========================= Scoring & Reconciliation ========================= */
 

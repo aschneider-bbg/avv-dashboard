@@ -1,3 +1,4 @@
+import { reconcileAndScore } from "@/lib/avv-scoring";
 import { NextRequest, NextResponse } from "next/server";
 import { Agent, Runner, withTrace } from "@openai/agents";
 import pdf from "pdf-parse";
@@ -491,10 +492,14 @@ export async function POST(req: NextRequest) {
     if (!merged?.finalOutput) throw new Error("Merge-Agent lieferte keine finale Ausgabe.");
 
     // 4) Reconciliation & deterministisches Scoring
+    // const finalJson = extractJson(merged.finalOutput);
+    // const reconciled = reconcileAndScore(finalJson);
+    // return NextResponse.json(reconciled);
+
     const finalJson = extractJson(merged.finalOutput);
     const reconciled = reconcileAndScore(finalJson);
-
     return NextResponse.json(reconciled);
+
   } catch (e: any) {
     return NextResponse.json(
       { error: "Agent-Serverfehler", details: e?.message ?? String(e) },
